@@ -112,6 +112,10 @@ export class Toolchain {
       mkdirp(p.slice(0, p.lastIndexOf("/")));
       mod.FS.writeFile(p, typeof data === "string" ? enc.encode(data) : data);
     }
+    // Under Node the glue's quit handler also sets process.exitCode (the same leak romdev's
+    // wasm-worker guards against); keep a tool's exit status from becoming the host's.
+    const proc = (globalThis as { process?: { exitCode?: number | string } }).process;
+    const hostExitCode = proc?.exitCode;
     let code = 0;
     try {
       code = mod.callMain(argv) ?? 0;
@@ -125,6 +129,10 @@ export class Toolchain {
       }
     }
     if (exitStatus !== null && code === 0) code = exitStatus;
+    if (proc && proc.exitCode !== hostExitCode) {
+      if (code === 0 && proc.exitCode) code = Number(proc.exitCode);
+      proc.exitCode = hostExitCode;
+    }
     const outputs: Record<string, string | null> = {};
     for (const p of opts.outputs ?? []) {
       try {
