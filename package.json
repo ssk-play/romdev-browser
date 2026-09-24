@@ -1,0 +1,39 @@
+{
+  "name": "romdev-browser",
+  "version": "0.1.0",
+  "description": "Run romdev's Game Boy / Game Boy Color toolchain (SDCC sm83) and emulator (gambatte) in the browser, inside Web Workers with a postMessage protocol.",
+  "license": "GPL-2.0-only",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ssk-play/romdev-browser.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "NOTICE.md",
+    "LICENSE"
+  ],
+  "exports": {
+    "./package.json": "./package.json",
+    "./dist/*": "./dist/*"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepare": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "romdev-core-gambatte": "0.12.1",
+    "romdev-core-host": "0.14.0",
+    "romdev-toolchain-sdcc": "0.2.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  }
+}
