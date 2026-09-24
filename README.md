@@ -11,24 +11,32 @@ served from any path and driven by any client.
 dist/
   compiler.worker.js   C sources → 32 KB .gb/.gbc ROM (mcpp → sdcc → sdasgb → sdld → header fix)
   emulator.worker.js   gambatte on an OffscreenCanvas; audio PCM posted back to the page
-  wasm/                patched emscripten glue + unmodified .wasm (see NOTICE.md)
+  wasm/                emscripten glue + .wasm, unmodified from romdev's recipes (see NOTICE.md)
   manifest.json        version, component versions, uncompressed asset sizes
 ```
 
 ## Use
 
+The WASM comes from a romdev checkout, not from the npm payloads: `package.json` points the `romdev-*`
+dependencies at `../romdev/packages/*`, and the build refuses node-only glue. Until
+[monteslu/romdev#8](https://github.com/monteslu/romdev/pull/8) is released, that checkout needs the
+`node,web,worker` recipes (https://github.com/ssk-play/romdev, branch `browser-environment`) and its payloads rebuilt:
+
 ```bash
-npm install github:ssk-play/romdev-browser#v0.1.0   # runs `prepare`, producing dist/
+git clone -b browser-environment https://github.com/ssk-play/romdev ../romdev
+cd ../romdev && npm ci --ignore-scripts && node scripts/fetch-payloads.mjs
+for s in build-gambatte.sh build-sdcc.sh build-mcpp.sh; do ROMDEV_BUILD_CWD=packages/romdevtools build-image/build-wasm.sh $s; done
+cp packages/romdevtools/src/toolchains/sdcc/wasm/{mcpp,sdcc,sdasgb,sdasz80,sdld}.{js,wasm} packages/romdev-toolchain-sdcc/wasm/
+cd ../romdev-browser && npm install && npm run build      # → dist/
 ```
 
-Serve `node_modules/romdev-browser/dist/` as static files (e.g. under `/lib/romdev-browser/0.1.0/`;
-the directory is immutable per version, so long cache lifetimes are safe). Workers resolve
-`./wasm/*` relative to their own URL.
+Serve `dist/` as static files (e.g. under `/lib/romdev-browser/<version>/`; immutable per version, so long cache
+lifetimes are safe). Workers resolve `./wasm/*` relative to their own URL.
 
 ### Compiler worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.1.0/compiler.worker.js", { type: "module" });
+const w = new Worker("/lib/romdev-browser/0.2.0/compiler.worker.js", { type: "module" });
 w.postMessage({ type: "warmup" });                         // optional: start the ~21 MB download
 w.postMessage({ type: "build", id: 1, input: { platform: "gbc", sources: { "main.c": src }, title: "MY GAME" } });
 ```
@@ -45,7 +53,7 @@ are on the include path; `_CODE=$0150`, `_DATA=$C200`; 32 KB, no bank switching.
 ### Emulator worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.1.0/emulator.worker.js", { type: "module" });
+const w = new Worker("/lib/romdev-browser/0.2.0/emulator.worker.js", { type: "module" });
 const off = canvas.transferControlToOffscreen();            // canvas is 160x144
 w.postMessage({ type: "init", canvas: off }, [off]);        // → {type:"ready"}
 w.postMessage({ type: "load", id: 1, rom, platform: "gbc", sram: null });
