@@ -80,3 +80,17 @@ npm test        # builds dist/, then toolchain + emulator tests in Node
 ## License
 
 GPL-2.0-only. See LICENSE and NOTICE.md for bundled components and their sources.
+
+## Headless service (`dist/server.mjs`)
+
+The same toolchain and gambatte core behind HTTP, for a server that builds and runs games for someone (8bit club runs
+it in a container for its MCP endpoint). Stateless; requests are served one at a time.
+
+```
+PORT=8080 [GAMELAB_KEY=secret] node dist/server.mjs
+GET  /health
+POST /build { platform, sources: { "main.c", ...extra .c/.h }, title? }  -> { ok, stage, rom (base64), romBytesUsed, issues, log, ms }
+POST /run   { platform, rom, frames, input: [{ frame, until, buttons }], shots: [frame], every, memory: [{ region, offset, length }], sram? }
+            -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png }], sram, ms }
+```
+

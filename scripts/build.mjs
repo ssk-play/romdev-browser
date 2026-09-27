@@ -86,6 +86,31 @@ await build({
   logLevel: "warning",
 });
 
+// The headless service (src/server.ts) for Node: same toolchain + core, builtins stay external.
+const serverOnly = {
+  name: "romdev-server-optional",
+  setup(b) {
+    const re = /^\.\/(io-node|framebuffer-png|LibretroGL|glOptionalDep|chafa-render)\.js$|^(pngjs|webgl-node|native-gles|@monteslu\/chafa-wasm)$/;
+    b.onResolve({ filter: re }, (args) => (args.importer.includes("romdev-core-host") ? { path: args.path, namespace: "node-only" } : undefined));
+    b.onLoad({ filter: /.*/, namespace: "node-only" }, () => ({ contents: 'throw new Error("optional module");', loader: "js" }));
+  },
+};
+await build({
+  entryPoints: { server: "src/server.ts" },
+  outdir: dist,
+  outExtension: { ".js": ".mjs" },
+  bundle: true,
+  format: "esm",
+  platform: "node",
+  target: "node22",
+  sourcemap: true,
+  legalComments: "eof",
+  loader: { ".c": "text", ".h": "text", ".s": "text" },
+  define: { __VERSION__: JSON.stringify(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version) },
+  plugins: [serverOnly],
+  logLevel: "warning",
+});
+
 function romdevCheckout() {
   const dir = realpathSync(pkgDir("romdev-toolchain-sdcc"));
   try {
