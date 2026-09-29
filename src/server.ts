@@ -5,7 +5,8 @@
 //   node dist/server.mjs            PORT (default 8080); GAMELAB_KEY, when set, must match the x-gamelab-key header
 //   GET  /health                    { ok, version }
 //   POST /build { platform, sources: { "main.c": ..., "x.c": ... }, title? }
-//        -> { ok, stage, rom: base64|null, romBytesUsed, issues, log, ms }
+//        -> { ok, stage, rom: base64|null, romBytesUsed, banks: { n: bytes }|null, issues, log, ms }
+//        Data in `#pragma constseg CODE_<n>` (n >= 2) goes to switchable ROM bank n; the cart becomes MBC5.
 //   POST /run   { platform, rom: base64, frames, input: [{ frame, until, buttons }], shots: [frame], every,
 //                 memory: [{ region, offset, length }] }
 //        -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png: base64 }], sram: base64|null, ms }
@@ -135,7 +136,7 @@ async function build(req: { platform: Platform; sources: Record<string, string>;
   if (!req.sources || typeof req.sources["main.c"] !== "string") throw new Error("sources must include main.c");
   const r = await toolchain.build({ platform: req.platform, sources: req.sources, title: req.title }, RUNTIME[req.platform]);
   return { ok: r.ok, stage: r.stage, rom: r.rom ? Buffer.from(r.rom).toString("base64") : null, romBytesUsed: r.romBytesUsed,
-    issues: r.issues, log: r.log.slice(-4000), ms: r.ms };
+    banks: r.banks ?? null, issues: r.issues, log: r.log.slice(-4000), ms: r.ms };
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────────────────────────────────────

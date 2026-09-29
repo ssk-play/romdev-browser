@@ -1,6 +1,7 @@
 export type Platform = "gb" | "gbc";
 
-export const ROM_SIZE = 0x8000; // 32 KB, two banks, no MBC bank switching.
+export const ROM_SIZE = 0x8000; // the fixed 32 KB: bank 0 and bank 1, as linked from $0000
+export const BANK = 0x4000;     // a switchable bank n >= 2 is linked at n<<16 | $4000 (its window) and sits at n x 16 KB
 
 const NINTENDO_LOGO = [
   0xce, 0xed, 0x66, 0x66, 0xcc, 0x0d, 0x00, 0x0b, 0x03, 0x73, 0x00, 0x83, 0x00, 0x0c, 0x00, 0x0d,
@@ -11,25 +12,10 @@ const NINTENDO_LOGO = [
 // MBC1/2/3/5 + BATTERY. The vendored gb_crt0.s declares $03 (MBC1+RAM+BATTERY).
 const BATTERY_CART_TYPES = new Set([0x03, 0x06, 0x0f, 0x10, 0x13, 0x1b, 0x1e]);
 
-/** Highest byte address an Intel HEX file writes, plus one. */
-export function ihxHighWaterMark(ihx: string): number {
-  let high = 0;
-  let max = 0;
-  for (const raw of ihx.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line.startsWith(":")) continue;
-    const count = parseInt(line.slice(1, 3), 16);
-    const addr = parseInt(line.slice(3, 7), 16);
-    const type = parseInt(line.slice(7, 9), 16);
-    if (type === 0x00) max = Math.max(max, ((high << 16) | addr) + count);
-    else if (type === 0x04) high = parseInt(line.slice(9, 9 + count * 2), 16);
-    else if (type === 0x01) break;
-  }
-  return max;
-}
+/** Where a linked address lands in the ROM file: the fixed 32 KB as is, bank n's window at n x 16 KB. */
+const romOffset = (linear: number) => (linear < 0x10000 ? linear : (linear >>> 16) * BANK + ((linear & 0xffff) - BANK));
 
-export function ihxToBin(ihx: string, size: number, fill = 0xff): Uint8Array {
-  const out = new Uint8Array(size).fill(fill);
+function* ihxRecords(ihx: string) {
   let high = 0;
   for (const raw of ihx.split(/\r?\n/)) {
     const line = raw.trim();
@@ -38,13 +24,43 @@ export function ihxToBin(ihx: string, size: number, fill = 0xff): Uint8Array {
     const addr = parseInt(line.slice(3, 7), 16);
     const type = parseInt(line.slice(7, 9), 16);
     const data = line.slice(9, 9 + count * 2);
-    if (type === 0x00) {
-      const base = (high << 16) | addr;
-      for (let i = 0; i < count; i++) {
-        if (base + i < size) out[base + i] = parseInt(data.slice(i * 2, i * 2 + 2), 16);
-      }
-    } else if (type === 0x04) high = parseInt(data, 16);
+    if (type === 0x00) yield { linear: (high << 16) | addr, data, count };
+    else if (type === 0x04) high = parseInt(data, 16);
     else if (type === 0x01) break;
+  }
+}
+
+/** Highest byte address an Intel HEX file writes, plus one. */
+export function ihxHighWaterMark(ihx: string): number {
+  let max = 0;
+  for (const r of ihxRecords(ihx)) max = Math.max(max, r.linear + r.count);
+  return max;
+}
+
+/** Bytes used: the fixed part up to its end, and each switchable bank from its window start. */
+export function ihxUsage(ihx: string): { fixed: number; banks: Record<number, number> } {
+  const out = { fixed: 0, banks: {} as Record<number, number> };
+  for (const r of ihxRecords(ihx)) {
+    if (r.linear < 0x10000) out.fixed = Math.max(out.fixed, r.linear + r.count);
+    else out.banks[r.linear >>> 16] = Math.max(out.banks[r.linear >>> 16] ?? 0, (r.linear & 0xffff) + r.count - BANK);
+  }
+  return out;
+}
+
+/** The ROM file size for these switchable banks: a power of two, at least the fixed 32 KB. */
+export function romSizeFor(banks: number[]): number {
+  let size = ROM_SIZE;
+  while (size < (Math.max(1, ...banks) + 1) * BANK) size *= 2;
+  return size;
+}
+
+export function ihxToBin(ihx: string, size: number, fill = 0xff): Uint8Array {
+  const out = new Uint8Array(size).fill(fill);
+  for (const r of ihxRecords(ihx)) {
+    for (let i = 0; i < r.count; i++) {
+      const at = romOffset(r.linear + i);
+      if (at < size) out[at] = parseInt(r.data.slice(i * 2, i * 2 + 2), 16);
+    }
   }
   return out;
 }
@@ -54,7 +70,7 @@ export function ihxToBin(ihx: string, size: number, fill = 0xff): Uint8Array {
  * (-v -p 0xFF [-C] -m <type> -r <ram>): logo, title, CGB flag, cart type
  * pass-through for battery carts, header + global checksums.
  */
-export function fixHeader(rom: Uint8Array, platform: Platform, title = ""): Uint8Array {
+export function fixHeader(rom: Uint8Array, platform: Platform, title = "", banked = false): Uint8Array {
   rom.set(NINTENDO_LOGO, 0x104);
   const ascii = title.toUpperCase().replace(/[^A-Z0-9 ]/g, "").slice(0, 11);
   for (let i = 0; i < 11; i++) rom[0x134 + i] = i < ascii.length ? ascii.charCodeAt(i) : 0;
@@ -64,10 +80,12 @@ export function fixHeader(rom: Uint8Array, platform: Platform, title = ""): Uint
   rom[0x146] = 0; // no SGB
   const declType = rom[0x147];
   const declRam = rom[0x149];
-  const cart = BATTERY_CART_TYPES.has(declType) ? declType : 0x00;
+  const battery = BATTERY_CART_TYPES.has(declType);
+  // switchable banks need a mapper: MBC5 (8-bit bank register at $2000, RAM enable at $0000 like MBC1)
+  const cart = banked ? (battery ? 0x1b : 0x19) : battery ? declType : 0x00;
   rom[0x147] = cart;
-  rom[0x148] = 0x00; // 32 KB
-  rom[0x149] = cart !== 0 && declRam >= 1 && declRam <= 5 ? declRam : 0x00;
+  rom[0x148] = Math.log2(rom.length / ROM_SIZE); // 0 = 32 KB, 1 = 64 KB, ...
+  rom[0x149] = battery && declRam >= 1 && declRam <= 5 ? declRam : 0x00;
   rom[0x14a] = 0x01; // non-Japanese
   rom[0x14b] = 0x33; // use new licensee code
   rom[0x14c] = 0x00; // version
