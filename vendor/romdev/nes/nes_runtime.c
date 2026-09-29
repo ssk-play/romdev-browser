@@ -1,0 +1,525 @@
+/* ── nes_runtime.c - runtime impl auto-linked into NES C builds ──
+ *
+ * See nes_runtime.h for the API. The crt0 (chr-ram.crt0.s) wires in
+ * the NMI handler that calls vram_queue_flush + commits scroll_x /
+ * scroll_y / ppuctrl_value. Shadow OAM lives at $0200 (defined in the
+ * crt0's OAM segment, exported as _shadow_oam).
+ */
+
+#include "nes_runtime.h"
+
+/* ── PPU register addresses - define here rather than depend on cc65's
+ * nes.h, since the chr-ram preset's reduced lib set doesn't pull it. */
+#define PPUCTRL   (*(volatile uint8_t *)0x2000)
+#define PPUMASK   (*(volatile uint8_t *)0x2001)
+#define PPUSTATUS (*(volatile uint8_t *)0x2002)
+#define OAMADDR   (*(volatile uint8_t *)0x2003)
+#define OAMDATA   (*(volatile uint8_t *)0x2004)
+#define PPUSCROLL (*(volatile uint8_t *)0x2005)
+#define PPUADDR   (*(volatile uint8_t *)0x2006)
+#define PPUDATA   (*(volatile uint8_t *)0x2007)
+#define OAMDMA    (*(volatile uint8_t *)0x4014)
+#define APUSTATUS (*(volatile uint8_t *)0x4015)
+#define JOY1      (*(volatile uint8_t *)0x4016)
+#define JOY2      (*(volatile uint8_t *)0x4017)
+/* JOY2 doubles as APU frame counter when written. */
+#define APUFRAMECTR (*(volatile uint8_t *)0x4017)
+
+/* APU pulse 1 ($4000-$4003) */
+#define PULSE1_VOL   (*(volatile uint8_t *)0x4000)
+#define PULSE1_SWEEP (*(volatile uint8_t *)0x4001)
+#define PULSE1_LO    (*(volatile uint8_t *)0x4002)
+#define PULSE1_HI    (*(volatile uint8_t *)0x4003)
+/* APU pulse 2 ($4004-$4007) */
+#define PULSE2_VOL   (*(volatile uint8_t *)0x4004)
+#define PULSE2_SWEEP (*(volatile uint8_t *)0x4005)
+#define PULSE2_LO    (*(volatile uint8_t *)0x4006)
+#define PULSE2_HI    (*(volatile uint8_t *)0x4007)
+/* APU triangle ($4008-$400B) */
+#define TRI_LINEAR   (*(volatile uint8_t *)0x4008)
+#define TRI_LO       (*(volatile uint8_t *)0x400A)
+#define TRI_HI       (*(volatile uint8_t *)0x400B)
+/* APU noise ($400C-$400F) */
+#define NOISE_VOL    (*(volatile uint8_t *)0x400C)
+#define NOISE_LO     (*(volatile uint8_t *)0x400E)
+#define NOISE_HI     (*(volatile uint8_t *)0x400F)
+
+/* ── State the crt0's NMI reads (exported globals) ───────────────── */
+uint8_t scroll_x = 0;
+uint8_t scroll_y = 0;
+/* Default PPUCTRL: NMI on (bit 7), sprite pattern $0000, BG pattern $1000,
+ * VRAM-increment 1, base nametable $2000. Game can override via ppu_*. */
+uint8_t ppuctrl_value = 0x90;
+volatile uint8_t nmi_counter = 0;
+
+/* OAM bookkeeping. shadow_oam itself is declared in chr-ram.crt0.s
+ * (so OAM segment placement at $0200 is linker-enforced). oam_index
+ * tracks the next free slot for oam_spr(). */
+static uint8_t oam_index = 0;
+static void oam_hide_unused(void);  /* fwd decl - used by ppu_wait_nmi (NES-1) */
+
+/* ── VRAM write queue ─────────────────────────────────────────────
+ * A ring buffer of { hi, lo, byte } entries. The NMI drains it with
+ * PPUADDR(hi); PPUADDR(lo); PPUDATA(byte) per entry - but only up to
+ * FLUSH_BUDGET entries per vblank (see the idiom note below). Game code
+ * that outruns the drain just blocks in vram_queue_push until a slot
+ * frees up; a big batch appears over 2-3 frames, invisible to a human.
+ *
+ * ── HARDWARE IDIOM (load-bearing) - the VBLANK BUDGET ──
+ * Vblank is ~2273 CPU cycles and OAM DMA already spends 513 of them.
+ * A flush that keeps writing past the end of vblank writes PPUDATA
+ * while RENDERING IS ACTIVE - the PPU's internal address register is
+ * busy fetching tiles, so those writes land at corrupted addresses.
+ * Symptom: a long batch of queued tiles where MOST land correctly but
+ * the tail is shifted or missing, identically every run. The budget
+ * caps the per-vblank drain so the flush always finishes inside vblank.
+ * The drain itself lives in the crt0's NMI handler IN ASSEMBLY (~40
+ * cycles/entry); compiled C spends 200+ cycles per entry, which blows
+ * the budget even for small batches - measured, not theoretical.
+ *
+ * ── HARDWARE IDIOM (load-bearing) - the NMI/main-thread race ──
+ * The NMI fires asynchronously; if it drained the queue WHILE
+ * vram_queue_push was mid-update, the in-flight entry would be lost
+ * and a stale slot replayed. The lock byte makes the flush skip any
+ * vblank that catches a push in progress (the queue drains a frame
+ * later). Symptom without it: HUD text with characters missing or
+ * shifted, coming and going with timing. */
+#define QUEUE_MAX     32            /* power of two - indices wrap via & */
+#define QUEUE_MASK    (QUEUE_MAX - 1)
+#define FLUSH_BUDGET  16            /* keep in sync with the crt0 asm */
+/* NOT static - the crt0's NMI drains the ring in assembly (see the
+ * vblank-budget idiom above; symbol names are part of the crt0 contract). */
+uint8_t vram_q_hi[QUEUE_MAX];
+uint8_t vram_q_lo[QUEUE_MAX];
+uint8_t vram_q_val[QUEUE_MAX];
+uint8_t vram_queue_head = 0;
+volatile uint8_t vram_queue_len = 0;
+volatile uint8_t vram_queue_lock = 0;
+
+/* Queue one byte. If full, wait for the NMI to drain a slot (lock
+ * RELEASED while waiting - holding it would deadlock), then enqueue
+ * under the lock. */
+static void vram_queue_push(uint16_t ppu_addr, uint8_t v) {
+  uint8_t slot;
+  for (;;) {
+    vram_queue_lock = 1;
+    if (vram_queue_len < QUEUE_MAX) break;
+    vram_queue_lock = 0;
+    ppu_wait_nmi();
+  }
+  slot = (uint8_t)((vram_queue_head + vram_queue_len) & QUEUE_MASK);
+  vram_q_hi[slot] = (uint8_t)(ppu_addr >> 8);
+  vram_q_lo[slot] = (uint8_t)(ppu_addr & 0xFF);
+  vram_q_val[slot] = v;
+  ++vram_queue_len;
+  vram_queue_lock = 0;
+}
+
+/* ── PPU control ──────────────────────────────────────────────── */
+
+void ppu_off(void) {
+  PPUMASK = 0;
+  PPUCTRL = ppuctrl_value & 0x7F;   /* disable NMI too */
+  ppuctrl_value &= 0x7F;
+}
+
+void ppu_on_all(void) {
+  ppuctrl_value |= 0x80;            /* NMI enable */
+  PPUMASK = 0x1E;                   /* show BG + sprites + leftmost cols */
+  PPUCTRL = ppuctrl_value;
+}
+
+void ppu_on_bg(void) {
+  ppuctrl_value |= 0x80;
+  PPUMASK = 0x0A;                   /* show BG + leftmost BG col */
+  PPUCTRL = ppuctrl_value;
+}
+
+void ppu_on_spr(void) {
+  ppuctrl_value |= 0x80;
+  PPUMASK = 0x14;                   /* show sprites + leftmost sprite col */
+  PPUCTRL = ppuctrl_value;
+}
+
+void ppu_wait_vblank(void) {
+  /* Setup-time wait - polls $2002 directly. Safe when NMI is disabled. */
+  while ((PPUSTATUS & 0x80) == 0) { /* spin */ }
+}
+
+void ppu_wait_nmi(void) {
+  uint8_t target;
+  /* Hide last frame's now-unused sprite slots BEFORE waiting, so the buffer
+   * the NMI's OAM-DMA copies is fully staged (live slots written by oam_spr,
+   * stale slots parked off-screen) - never a half-cleared buffer (NES-1). */
+  oam_hide_unused();
+  target = (uint8_t)(nmi_counter + 1);
+  while (nmi_counter != target) { /* spin */ }
+}
+
+uint8_t ppu_system(void) {
+  /* Cheap heuristic: count vblanks per CPU loop. Punt for v1 - return
+   * NTSC. Real PAL detection is a frame-rate measurement we don't
+   * need until anyone asks for PAL builds. */
+  return 0;
+}
+
+/* ── Palettes ─────────────────────────────────────────────────── */
+
+void palette_load(const uint8_t *pal32) {
+  uint8_t i;
+  /* Caller must call this with PPU off (so it's a direct write).
+   * If we wanted to support runtime palette swaps we'd need a
+   * dedicated palette queue, but for v1 the init-only contract is
+   * documented in the header. */
+  (void)PPUSTATUS;
+  PPUADDR = 0x3F;
+  PPUADDR = 0x00;
+  for (i = 0; i < 32; i++) {
+    PPUDATA = pal32[i];
+  }
+}
+
+/* ── OAM ──────────────────────────────────────────────────────── */
+
+/* High-water mark: the largest oam_index reached last frame. Lets us blank
+ * ONLY the slots a frame stopped using, instead of the whole 256-byte buffer
+ * every frame. */
+static uint8_t oam_high = 0;
+
+void oam_clear(void) {
+  /* NES-1 FIX: do NOT blank the whole shadow buffer here. The old full clear
+   * wrote slot 0's Y=$FF FIRST and took ~hundreds of cycles; if the NMI's
+   * OAM-DMA fired mid-clear it copied a HALF-CLEARED buffer → the live sprite
+   * vanished every other frame (the classic "sprite flickers to black"
+   * sprite-light scaffold bug). Instead we just reset the staging index here;
+   * ppu_wait_nmi() hides the slots this frame stopped using, so the DMA only
+   * ever sees a fully-staged buffer. */
+  oam_index = 0;
+}
+
+/* Hide slots [oam_index .. oam_high] (the ones used last frame but not this
+ * frame) by parking their Y off-screen. Called from ppu_wait_nmi AFTER the
+ * game has staged its live sprites, so live slots are never blanked. */
+static void oam_hide_unused(void) {
+  uint16_t i;
+  for (i = oam_index; i < (uint16_t)oam_high + 4 && i < 256; i += 4) {
+    shadow_oam[i] = 0xFF;             /* Y off-screen */
+  }
+  oam_high = oam_index;
+}
+
+void oam_spr(uint8_t x, uint8_t y, uint8_t tile, uint8_t attr) {
+  /* OAM byte order: Y, tile, attr, X. Y - 1 for the off-by-one PPU
+   * convention so the caller can pass "screen Y" and have it land
+   * where they expect. */
+  shadow_oam[oam_index + 0] = (uint8_t)(y - 1);
+  shadow_oam[oam_index + 1] = tile;
+  shadow_oam[oam_index + 2] = attr;
+  shadow_oam[oam_index + 3] = x;
+  oam_index += 4;
+  /* Wraps at 256 back to 0 - game code calling oam_spr more than 64
+   * times will overwrite earlier slots. That's fine; hardware caps
+   * at 64 anyway. */
+}
+
+/* ── Input ────────────────────────────────────────────────────── */
+
+uint8_t pad_poll(uint8_t which) {
+  uint8_t i, bit;
+  uint8_t out = 0;
+  /* Strobe - write 1 then 0 to $4016. */
+  JOY1 = 1;
+  JOY1 = 0;
+  if (which == 0) {
+    for (i = 0; i < 8; i++) {
+      bit = JOY1 & 0x01;
+      out = (uint8_t)((out << 1) | bit);
+    }
+  } else {
+    for (i = 0; i < 8; i++) {
+      bit = JOY2 & 0x01;
+      out = (uint8_t)((out << 1) | bit);
+    }
+  }
+  return out;
+}
+
+/* ── CHR-RAM upload ────────────────────────────────────────────── */
+
+void chr_ram_upload(uint16_t ppu_addr, const uint8_t *src, uint16_t n) {
+  /* Caller must call with PPU off. Writes are sequential - PPUADDR
+   * auto-increments by 1 per write (since PPUCTRL bit 2 = 0). */
+  uint16_t i;
+  (void)PPUSTATUS;
+  PPUADDR = (uint8_t)(ppu_addr >> 8);
+  PPUADDR = (uint8_t)(ppu_addr & 0xFF);
+  for (i = 0; i < n; i++) {
+    PPUDATA = src[i];
+  }
+}
+
+/* ── Direct VRAM write (init-only) ────────────────────────────── */
+
+void vram_unsafe_set(uint16_t ppu_addr, uint8_t b) {
+  (void)PPUSTATUS;
+  PPUADDR = (uint8_t)(ppu_addr >> 8);
+  PPUADDR = (uint8_t)(ppu_addr & 0xFF);
+  PPUDATA = b;
+}
+
+/* ── Queued VRAM writes (safe during rendering) ────────────────── */
+
+void vram_set(uint16_t ppu_addr, uint8_t v) {
+  vram_queue_push(ppu_addr, v);
+}
+
+/* Compute nametable cell address. Nametables are 32 tiles wide × 30
+ * tall; nt 0 = $2000, 1 = $2400, 2 = $2800, 3 = $2C00. */
+void tile_set(uint8_t nt, uint8_t x, uint8_t y, uint8_t tile) {
+  uint16_t base = 0x2000 + ((uint16_t)(nt & 3) << 10);
+  uint16_t off  = (uint16_t)((uint16_t)y * 32 + x);
+  vram_queue_push((uint16_t)(base + off), tile);
+}
+
+/* Attribute table is one byte per 4×4 tile group, at nametable + $3C0.
+ * Each byte holds 4 quadrants of 2 bits each: top-left bits 0-1,
+ * top-right 2-3, bottom-left 4-5, bottom-right 6-7.
+ *
+ * NES homebrew typically batches a whole row of attributes at once via
+ * a hand-rolled RMW. For a single tile change in C we have to read the
+ * current byte, mask the right 2 bits, and re-write. Since the queue
+ * is fire-and-forget (we can't read back from VRAM), we maintain a
+ * shadow attribute table in WRAM that's kept in sync.
+ *
+ * Memory cost: 4 nametables × 64 bytes = 256 bytes of WRAM.
+ */
+static uint8_t shadow_attr[4][64];
+
+void tile_set_palette(uint8_t nt, uint8_t x, uint8_t y, uint8_t palette) {
+  uint8_t nt_idx = (uint8_t)(nt & 3);
+  uint8_t row = (uint8_t)(y >> 2);
+  uint8_t col = (uint8_t)(x >> 2);
+  uint8_t attr_idx = (uint8_t)(row * 8 + col);
+  uint8_t shift = (uint8_t)(((y & 2) << 1) | (x & 2));  /* 0, 2, 4, or 6 */
+  uint8_t mask = (uint8_t)(0x03 << shift);
+  uint8_t b = shadow_attr[nt_idx][attr_idx];
+  uint16_t addr;
+  b = (uint8_t)((b & ~mask) | ((palette & 0x03) << shift));
+  shadow_attr[nt_idx][attr_idx] = b;
+  addr = (uint16_t)(0x23C0 + ((uint16_t)nt_idx << 10) + attr_idx);
+  vram_queue_push(addr, b);
+}
+
+/* ── Scroll ───────────────────────────────────────────────────── */
+
+void ppu_scroll(uint16_t x, uint16_t y) {
+  /* PPUCTRL bits 0-1 select the base nametable. Bit 0 = X >= 256,
+   * bit 1 = Y >= 240. The low 8 bits of X/Y go straight into
+   * PPUSCROLL. */
+  uint8_t nt = (uint8_t)((ppuctrl_value & 0xFC));
+  if (x & 0x100) nt |= 0x01;
+  if (y & 0x100) nt |= 0x02;
+  ppuctrl_value = nt;
+  scroll_x = (uint8_t)(x & 0xFF);
+  scroll_y = (uint8_t)(y & 0xFF);
+  /* Take effect at next NMI - the crt0 NMI writes scroll_x, scroll_y,
+   * and ppuctrl_value to PPUSCROLL/PPUCTRL. */
+}
+
+/* ── Sound ──────────────────────────────────────────────────────
+ * The NES APU has 5 channels: 2 pulse, 1 triangle, 1 noise, 1 DMC.
+ * sound_init() enables the first four. DMC stays off (it needs a
+ * sample, which most homebrew doesn't want to deal with).
+ */
+
+/* APU length-counter table. The 5-bit value written to the length
+ * counter latch (high nybble of $4003/$4007/$400B/$400F) indexes into
+ * this table to set how many frames the channel plays. Pulled from
+ * nesdev wiki "APU Length Counter". */
+static const uint8_t length_table[32] = {
+  10, 254, 20,  2, 40,  4, 80,  6, 160,  8, 60, 10, 14, 12, 26, 14,
+  12,  16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30,
+};
+
+void sound_init(void) {
+  APUSTATUS = 0x0F;        /* enable pulse1 + pulse2 + triangle + noise */
+  APUFRAMECTR = 0x40;      /* 4-step frame counter, disable frame IRQ */
+}
+
+/* ── background music: 16-step melody on the TRIANGLE channel ───────
+ * The pulse channels + noise stay free for sound_play_tone/noise SFX.
+ * Call sound_music_tick() once per frame (after ppu_wait_nmi); the
+ * scaffolds wire it in. sound_music(0) silences it. ("No sound" was
+ * the dominant NES playtest complaint - a rare 6-frame blip isn't
+ * enough; continuous triangle gives every scaffold a musical floor.)
+ * NTSC triangle period for note f ≈ 1789773/(32*f) - 1. */
+static const uint16_t music_period_tbl[16] = {
+    213, 168, 141, 106, 141, 168, 213, 0,   /* C4 E4 G4 C5 G4 E4 C4 -  */
+    253, 213, 168, 126, 168, 213, 253, 0,   /* A3 C4 E4 A4 E4 C4 A3 -  */
+};
+static uint8_t music_enabled = 1;
+static uint8_t music_step;
+static uint8_t music_timer;
+
+void sound_music(uint8_t on) {
+  music_enabled = on;
+  music_step = 0;
+  music_timer = 0;
+  if (!on) { TRI_LINEAR = 0x00; TRI_HI = 0x08; }   /* reload 0 linear → silent */
+}
+
+void sound_music_tick(void) {
+  uint16_t p;
+  if (!music_enabled) return;
+  if (music_timer == 0) {
+    p = music_period_tbl[music_step & 15];
+    if (p) {
+      TRI_LINEAR = 0xFF;                       /* halt flag + max linear: sustain */
+      TRI_LO     = (uint8_t)(p & 0xFF);
+      TRI_HI     = (uint8_t)((p >> 8) & 0x07); /* also reloads the linear counter */
+    } else {
+      TRI_LINEAR = 0x00;                       /* rest */
+      TRI_HI     = 0x08;
+    }
+    ++music_step;
+  }
+  ++music_timer;
+  if (music_timer >= 9) music_timer = 0;
+}
+
+void sound_play_tone(uint8_t channel, uint16_t period, uint8_t vol_4bit, uint8_t length_frames) {
+  uint8_t len5 = length_frames & 0x1F;
+  uint8_t v = vol_4bit & 0x0F;
+  uint8_t lo = (uint8_t)(period & 0xFF);
+  uint8_t hi_period = (uint8_t)((period >> 8) & 0x07);
+  /* high byte format: bits 7-3 = length-counter latch, bits 2-0 = timer hi */
+  uint8_t hi = (uint8_t)((len5 << 3) | hi_period);
+
+  if (channel == 0) {
+    PULSE1_VOL   = (uint8_t)(0xB0 | v);   /* duty 10 (50%), const vol, vol=v */
+    PULSE1_SWEEP = 0x08;                  /* sweep disabled */
+    PULSE1_LO    = lo;
+    PULSE1_HI    = hi;
+  } else if (channel == 1) {
+    PULSE2_VOL   = (uint8_t)(0xB0 | v);
+    PULSE2_SWEEP = 0x08;
+    PULSE2_LO    = lo;
+    PULSE2_HI    = hi;
+  } else {
+    /* triangle - no volume control, no envelope */
+    TRI_LINEAR   = 0xFF;                  /* linear counter max */
+    TRI_LO       = lo;
+    TRI_HI       = hi;
+  }
+}
+
+void sound_play_noise(uint8_t period_4bit, uint8_t vol_4bit, uint8_t length_frames) {
+  uint8_t len5 = length_frames & 0x1F;
+  NOISE_VOL = (uint8_t)(0x30 | (vol_4bit & 0x0F));  /* const vol */
+  NOISE_LO  = (uint8_t)(period_4bit & 0x0F);
+  NOISE_HI  = (uint8_t)(len5 << 3);
+  (void)length_table;  /* documentation; not used directly */
+}
+
+void sound_off(void) {
+  APUSTATUS = 0x00;
+}
+
+
+/* ════════════════════════════════════════════════════════════════════
+ * Text + font (0.29.0 examples contract)
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* ── HARDWARE IDIOM (load-bearing - reshape gameplay around this; see TROUBLESHOOTING) ──
+ * Font glyphs are 1bpp (plane 0 only → colour index 1 of the BG palette).
+ * They upload into the BACKGROUND pattern table at $1400+ - tile ids $40+ -
+ * NOT the sprite table at $0000 (the runtime maps BG to $1000, sprites to
+ * $0000 via PPUCTRL). Requires: PPU rendering OFF during font_upload (raw
+ * $2007 writes), 37*16 = 592 bytes of CHR-RAM free at $1400-$164F. */
+static const uint8_t font8[37][8] = {
+  /* 0-9 */
+  {0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00}, {0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00},
+  {0x3C,0x66,0x06,0x0C,0x18,0x30,0x7E,0x00}, {0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00},
+  {0x0C,0x1C,0x3C,0x6C,0x7E,0x0C,0x0C,0x00}, {0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0x00},
+  {0x1C,0x30,0x60,0x7C,0x66,0x66,0x3C,0x00}, {0x7E,0x06,0x0C,0x18,0x30,0x30,0x30,0x00},
+  {0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00}, {0x3C,0x66,0x66,0x3E,0x06,0x0C,0x38,0x00},
+  /* A-Z */
+  {0x18,0x3C,0x66,0x66,0x7E,0x66,0x66,0x00}, {0x7C,0x66,0x66,0x7C,0x66,0x66,0x7C,0x00},
+  {0x3C,0x66,0x60,0x60,0x60,0x66,0x3C,0x00}, {0x78,0x6C,0x66,0x66,0x66,0x6C,0x78,0x00},
+  {0x7E,0x60,0x60,0x7C,0x60,0x60,0x7E,0x00}, {0x7E,0x60,0x60,0x7C,0x60,0x60,0x60,0x00},
+  {0x3C,0x66,0x60,0x6E,0x66,0x66,0x3E,0x00}, {0x66,0x66,0x66,0x7E,0x66,0x66,0x66,0x00},
+  {0x7E,0x18,0x18,0x18,0x18,0x18,0x7E,0x00}, {0x06,0x06,0x06,0x06,0x66,0x66,0x3C,0x00},
+  {0x66,0x6C,0x78,0x70,0x78,0x6C,0x66,0x00}, {0x60,0x60,0x60,0x60,0x60,0x60,0x7E,0x00},
+  {0x63,0x77,0x7F,0x6B,0x63,0x63,0x63,0x00}, {0x66,0x76,0x7E,0x7E,0x6E,0x66,0x66,0x00},
+  {0x3C,0x66,0x66,0x66,0x66,0x66,0x3C,0x00}, {0x7C,0x66,0x66,0x7C,0x60,0x60,0x60,0x00},
+  {0x3C,0x66,0x66,0x66,0x6A,0x6C,0x36,0x00}, {0x7C,0x66,0x66,0x7C,0x6C,0x66,0x66,0x00},
+  {0x3C,0x66,0x60,0x3C,0x06,0x66,0x3C,0x00}, {0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x00},
+  {0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x00}, {0x66,0x66,0x66,0x66,0x66,0x3C,0x18,0x00},
+  {0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00}, {0x66,0x66,0x3C,0x18,0x3C,0x66,0x66,0x00},
+  {0x66,0x66,0x66,0x3C,0x18,0x18,0x18,0x00}, {0x7E,0x06,0x0C,0x18,0x30,0x60,0x7E,0x00},
+  /* '-' */
+  {0x00,0x00,0x00,0x7E,0x00,0x00,0x00,0x00},
+};
+#define FONT_BASE_TILE 0x40
+
+void font_upload(void) {
+  uint8_t g, r;
+  uint8_t tile[16];
+  for (r = 8; r < 16; r++) tile[r] = 0;           /* plane 1 = 0 (colour 1) */
+  for (g = 0; g < 37; g++) {
+    for (r = 0; r < 8; r++) tile[r] = font8[g][r];
+    chr_ram_upload((uint16_t)(0x1000 + ((FONT_BASE_TILE + g) << 4)), tile, 16);
+  }
+}
+
+/* char → BG tile id (space → tile 0 = blank). */
+static uint8_t font_tile(char ch) {
+  if (ch >= '0' && ch <= '9') return (uint8_t)(FONT_BASE_TILE + (ch - '0'));
+  if (ch >= 'A' && ch <= 'Z') return (uint8_t)(FONT_BASE_TILE + 10 + (ch - 'A'));
+  if (ch >= 'a' && ch <= 'z') return (uint8_t)(FONT_BASE_TILE + 10 + (ch - 'a'));
+  if (ch == '-') return (uint8_t)(FONT_BASE_TILE + 36);
+  return 0;
+}
+
+void text_draw_unsafe(uint16_t ppu_addr, const char *s) {
+  while (*s) vram_unsafe_set(ppu_addr++, font_tile(*s++));
+}
+
+void text_draw(uint8_t nt, uint8_t x, uint8_t y, const char *s) {
+  while (*s) tile_set(nt, x++, y, font_tile(*s++));
+}
+
+void text_draw_u16(uint8_t nt, uint8_t x, uint8_t y, uint16_t v) {
+  uint8_t d[5];
+  uint8_t i;
+  for (i = 0; i < 5; i++) { d[i] = v % 10; v /= 10; }
+  for (i = 0; i < 5; i++) tile_set(nt, (uint8_t)(x + i), y, (uint8_t)(FONT_BASE_TILE + d[4 - i]));
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * Hi-score persistence (battery PRG-RAM at $6000)
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* ── HARDWARE IDIOM (load-bearing - reshape gameplay around this; see TROUBLESHOOTING) ──
+ * Requires: the iNES BATTERY flag in the crt0 header (flags6 bit 1 - the
+ * bundled chr-ram-runtime crt0 sets it). Without it, NROM leaves
+ * $6000-$7FFF UNMAPPED: reads return open bus (looks like data, isn't),
+ * writes vanish, and nothing persists. With it the emulator maps 8KB
+ * persistent PRG-RAM there (the save_ram region) like a real battery cart.
+ * First boot is GARBAGE, not zeros - that's why the magic + checksum. */
+#define SRAM ((volatile uint8_t *)0x6000)
+
+uint16_t hiscore_load(void) {
+  uint16_t v;
+  if (SRAM[0] != 'H' || SRAM[1] != 'S') return 0;
+  v = (uint16_t)SRAM[2] | ((uint16_t)SRAM[3] << 8);
+  if (SRAM[4] != (uint8_t)(SRAM[2] ^ SRAM[3] ^ 0xA5)) return 0;
+  return v;
+}
+
+void hiscore_save(uint16_t v) {
+  SRAM[0] = 'H'; SRAM[1] = 'S';
+  SRAM[2] = (uint8_t)(v & 0xFF);
+  SRAM[3] = (uint8_t)(v >> 8);
+  SRAM[4] = (uint8_t)(SRAM[2] ^ SRAM[3] ^ 0xA5);
+}

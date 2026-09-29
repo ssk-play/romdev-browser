@@ -74,3 +74,32 @@ unsigned char far_sum(unsigned char a, unsigned char b) __banked { return (unsig
     assert.equal(r.rows.at(-1).memory[0], "319601", platform);
   }
 });
+
+test("server builds and runs NES next to GBC in one process", async (t) => {
+  const port = 19000 + Math.floor(Math.random() * 1000);
+  const proc = spawn(process.execPath, [path.join(root, "dist", "server.mjs")], { env: { ...process.env, PORT: String(port) }, stdio: "pipe" });
+  t.after(() => proc.kill());
+  await new Promise((ok, fail) => { proc.stdout.on("data", ok); proc.on("exit", fail); });
+  const post = async (p, body) => (await fetch(`http://127.0.0.1:${port}${p}`, { method: "POST", body: JSON.stringify(body) })).json();
+
+  const nes = await post("/build", { platform: "nes", sources: { "main.c": template("nes", "platformer") } });
+  assert.ok(nes.ok, nes.log);
+  assert.equal(Buffer.from(nes.rom, "base64").subarray(0, 4).toString("latin1"), "NES\x1a");
+  const gbc = await post("/build", { platform: "gbc", sources: { "main.c": template("gbc", "platformer") } });
+  assert.ok(gbc.ok, gbc.log);
+
+  const run = (platform, rom) => post("/run", { platform, rom, frames: 200, input: [{ frame: 120, until: 126, buttons: ["a", "start"] }],
+    shots: [100, 200], memory: [{ offset: 0, length: 16 }], sram: true });
+  const a = await run("nes", nes.rom);
+  const pngSize = (b64) => { const b = Buffer.from(b64, "base64"); return [b.readUInt32BE(16), b.readUInt32BE(20)]; };
+  assert.deepEqual(pngSize(a.shots[0].png), [256, 224]);
+  assert.notEqual(a.shots[0].png, a.shots[1].png, "A should change the screen");
+  assert.equal(Buffer.from(a.sram, "base64").length, 8192);
+  const b = await run("gbc", gbc.rom);   // back to the Game Boy core
+  assert.deepEqual(pngSize(b.shots[0].png), [160, 144]);
+  const c = await run("nes", nes.rom);   // and NES again: same frames as the first run
+  assert.equal(c.shots[1].png, a.shots[1].png);
+
+  const bad = await post("/build", { platform: "snes", sources: { "main.c": "" } });
+  assert.match(bad.error, /platform: gb or gbc or nes/);
+});

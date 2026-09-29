@@ -4,10 +4,10 @@
 //
 //   node dist/server.mjs            PORT (default 8080); GAMELAB_KEY, when set, must match the x-gamelab-key header
 //   GET  /health                    { ok, version }
-//   POST /build { platform, sources: { "main.c": ..., "x.c": ... }, title? }
+//   POST /build { platform: gb | gbc | nes, sources: { "main.c": ..., "x.c": ... }, title? }
 //        -> { ok, stage, rom: base64|null, romBytesUsed, banks: { n: bytes }|null, issues, log, ms }
-//        Data (`#pragma constseg CODE_<n>`, n = 2-511) and `__banked` code (`#pragma codeseg CODE_<n>`) go to
-//        switchable ROM bank n; the cart becomes MBC5.
+//        gb/gbc: data (`#pragma constseg CODE_<n>`, n = 2-511) and `__banked` code (`#pragma codeseg CODE_<n>`) go
+//        to switchable ROM bank n; the cart becomes MBC5. nes: romdev's NES C project (32 KB PRG, CHR-RAM, battery).
 //   POST /run   { platform, rom: base64, frames, input: [{ frame, until, buttons }], shots: [frame], every,
 //                 memory: [{ region, offset, length }] }
 //        -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png: base64 }], sram: base64|null, ms }
@@ -15,9 +15,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { crc32, deflateSync } from "node:zlib";
 import { LibretroHost } from "romdev-core-host";
-import { Toolchain, type ToolLoader, type ToolName, type EmscriptenFactory } from "./toolchain.ts";
-import { RUNTIME } from "./runtime.ts";
+import { builder } from "./build.ts";
 import { CORES, isPlatform, PLATFORMS, type Core } from "./platforms.ts";
+import type { EmscriptenFactory, ShareName, ToolLoader } from "./wasmtool.ts";
 import type { Buttons, Platform } from "./protocol.ts";
 
 declare const __VERSION__: string;
@@ -26,9 +26,9 @@ const MAX_FRAMES = 60 * 60 * 10;
 const BUTTONS = ["up", "down", "left", "right", "a", "b", "start", "select"] as const;
 
 // ── toolchain ─────────────────────────────────────────────────────────────────────────────────────────────────
-const modules = new Map<ToolName, Promise<WebAssembly.Module>>();
-const factories = new Map<ToolName, Promise<EmscriptenFactory>>();
-let share: Promise<Record<string, Uint8Array>> | null = null;
+const modules = new Map<string, Promise<WebAssembly.Module>>();
+const factories = new Map<string, Promise<EmscriptenFactory>>();
+const shares = new Map<ShareName, Promise<Record<string, Uint8Array>>>();
 const loader: ToolLoader = {
   factory(tool) {
     if (!factories.has(tool)) factories.set(tool, import(asset(`${tool}.mjs`).href).then((m) => m.default));
@@ -38,15 +38,17 @@ const loader: ToolLoader = {
     if (!modules.has(tool)) modules.set(tool, WebAssembly.compile(readFileSync(asset(`${tool}.wasm`))));
     return modules.get(tool)!;
   },
-  share() {
-    share ??= Promise.resolve(Object.fromEntries(
-      Object.entries(JSON.parse(readFileSync(asset("sdcc-share.json"), "utf8")) as Record<string, string>)
-        .map(([k, v]) => [k, new Uint8Array(Buffer.from(v, "base64"))]),
-    ));
-    return share;
+  share(name) {
+    if (!shares.has(name)) {
+      shares.set(name, Promise.resolve(Object.fromEntries(
+        Object.entries(JSON.parse(readFileSync(asset(`${name}-share.json`), "utf8")) as Record<string, string>)
+          .map(([k, v]) => [k, new Uint8Array(Buffer.from(v, "base64"))]),
+      )));
+    }
+    return shares.get(name)!;
   },
 };
-const toolchain = new Toolchain(loader);
+const buildRom = builder(loader);
 
 // ── emulator ──────────────────────────────────────────────────────────────────────────────────────────────────
 const hosts = new Map<Core, Promise<LibretroHost>>();
@@ -143,7 +145,7 @@ async function run(req: RunRequest) {
 async function build(req: { platform: Platform; sources: Record<string, string>; title?: string }) {
   if (!isPlatform(req.platform)) throw platformError();
   if (!req.sources || typeof req.sources["main.c"] !== "string") throw new Error("sources must include main.c");
-  const r = await toolchain.build({ platform: req.platform, sources: req.sources, title: req.title }, RUNTIME[req.platform]);
+  const r = await buildRom({ platform: req.platform, sources: req.sources, title: req.title });
   return { ok: r.ok, stage: r.stage, rom: r.rom ? Buffer.from(r.rom).toString("base64") : null, romBytesUsed: r.romBytesUsed,
     banks: r.banks ?? null, issues: r.issues, log: r.log.slice(-4000), ms: r.ms };
 }

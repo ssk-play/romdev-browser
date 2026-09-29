@@ -2,24 +2,13 @@
 // GB project recipe (gb_crt0.s, _CODE=$0150, _DATA=$C200, rgbfix-equivalent header).
 // Environment-agnostic: the caller supplies the glue factories + compiled wasm
 // modules, so the same code runs in a Web Worker and in Node tests.
-import { BANK, fixHeader, ihxToBin, ihxUsage, ROM_SIZE, romSizeFor, type Platform } from "./rom.ts";
+import { BANK, fixHeader, ihxToBin, ihxUsage, ROM_SIZE, romSizeFor } from "./rom.ts";
+import type { Platform } from "./protocol.ts";
+import { runTool, shareFiles, type ToolLoader } from "./wasmtool.ts";
+
+export type { EmscriptenFactory, ToolLoader } from "./wasmtool.ts";
 
 export type ToolName = "mcpp" | "sdcc" | "sdasgb" | "sdld";
-
-type EmscriptenFS = {
-  mkdir(path: string): void;
-  writeFile(path: string, data: Uint8Array): void;
-  readFile(path: string): Uint8Array;
-};
-type EmscriptenModule = { FS: EmscriptenFS; callMain(argv: string[]): number };
-export type EmscriptenFactory = (opts: Record<string, unknown>) => Promise<EmscriptenModule>;
-
-export interface ToolLoader {
-  factory(tool: ToolName): Promise<EmscriptenFactory>;
-  module(tool: ToolName): Promise<WebAssembly.Module>;
-  /** SDCC share tree: "include/stdint.h", "lib/sm83/sm83.lib", ... */
-  share(): Promise<Record<string, Uint8Array>>;
-}
 
 export interface PlatformRuntime {
   headers: Record<string, string>; // gb_hardware.h, gb_runtime.h, font.h
@@ -55,15 +44,6 @@ export interface BuildInput {
 const CODE_LOC = 0x0150;
 const DATA_LOC = 0xc200; // above shadow_oam ($C100-$C19F)
 
-const enc = new TextEncoder();
-const dec = new TextDecoder();
-
-interface RunResult {
-  code: number;
-  log: string;
-  outputs: Record<string, string | null>;
-}
-
 export class Toolchain {
   private runtimeRelCache = new Map<string, { runtime: string; crt0: string }>();
   private loader: ToolLoader;
@@ -72,85 +52,12 @@ export class Toolchain {
     this.loader = loader;
   }
 
-  private async run(
-    tool: ToolName,
-    argv: string[],
-    opts: { files?: Record<string, Uint8Array | string>; stdin?: string; outputs?: string[] } = {},
-  ): Promise<RunResult> {
-    const [factory, wasmModule] = await Promise.all([this.loader.factory(tool), this.loader.module(tool)]);
-    let log = "";
-    let exitStatus: number | null = null;
-    const stdinBytes = opts.stdin != null ? enc.encode(opts.stdin) : null;
-    let stdinPos = 0;
-    const mod = await factory({
-      noInitialRun: true,
-      print: (s: string) => (log += s + "\n"),
-      printErr: (s: string) => (log += s + "\n"),
-      quit: (status: number, toThrow?: unknown) => {
-        exitStatus = status;
-        throw toThrow ?? new Error("exit " + status);
-      },
-      onExit: (status: number) => (exitStatus = status),
-      // Reuse the compiled module; each run gets a fresh instance + MEMFS.
-      instantiateWasm: (imports: WebAssembly.Imports, done: (i: WebAssembly.Instance, m: WebAssembly.Module) => void) => {
-        WebAssembly.instantiate(wasmModule, imports).then((inst) => done(inst, wasmModule));
-        return {};
-      },
-      ...(stdinBytes ? { stdin: () => (stdinPos < stdinBytes.length ? stdinBytes[stdinPos++] : null) } : {}),
-    });
-    const mkdirp = (dir: string) => {
-      let cur = "";
-      for (const part of dir.split("/").filter(Boolean)) {
-        cur += "/" + part;
-        try {
-          mod.FS.mkdir(cur);
-        } catch {
-          /* exists */
-        }
-      }
-    };
-    mkdirp("/work");
-    for (const [p, data] of Object.entries(opts.files ?? {})) {
-      mkdirp(p.slice(0, p.lastIndexOf("/")));
-      mod.FS.writeFile(p, typeof data === "string" ? enc.encode(data) : data);
-    }
-    // Under Node the glue's quit handler also sets process.exitCode (the same leak romdev's
-    // wasm-worker guards against); keep a tool's exit status from becoming the host's.
-    const proc = (globalThis as { process?: { exitCode?: number | string } }).process;
-    const hostExitCode = proc?.exitCode;
-    let code = 0;
-    try {
-      code = mod.callMain(argv) ?? 0;
-    } catch (e) {
-      const status = (e as { status?: number })?.status;
-      if (typeof status === "number") code = status;
-      else if (exitStatus !== null) code = exitStatus;
-      else {
-        code = 1;
-        log += `\n[abort] ${(e as Error)?.message ?? e}\n`;
-      }
-    }
-    if (exitStatus !== null && code === 0) code = exitStatus;
-    if (proc && proc.exitCode !== hostExitCode) {
-      if (code === 0 && proc.exitCode) code = Number(proc.exitCode);
-      proc.exitCode = hostExitCode;
-    }
-    const outputs: Record<string, string | null> = {};
-    for (const p of opts.outputs ?? []) {
-      try {
-        outputs[p] = dec.decode(mod.FS.readFile(p));
-      } catch {
-        outputs[p] = null;
-      }
-    }
-    return { code, log, outputs };
+  private run(tool: ToolName, argv: string[], opts: Parameters<typeof runTool>[3] = {}) {
+    return runTool(this.loader, tool, argv, opts);
   }
 
-  private async shareFiles(prefix: string, mount: string): Promise<Record<string, Uint8Array>> {
-    const share = await this.loader.share();
-    const files: Record<string, Uint8Array> = {};
-    for (const [k, v] of Object.entries(share)) if (k.startsWith(prefix)) files[mount + k.slice(prefix.length)] = v;
-    return files;
+  private shareFiles(prefix: string, mount: string) {
+    return shareFiles(this.loader, "sdcc", prefix, mount);
   }
 
   /** mcpp → sdcc --c1mode → sdasgb. Returns .rel text or a failed RunResult log. */
@@ -270,7 +177,7 @@ export class Toolchain {
       const issues = over.map((message) => ({ file: "link", line: null, severity: "error" as const, message }));
       return done({ ok: false, stage: "size", rom: null, romBytesUsed: used, banks: usage.banks, issues, log: log + over.join("\n") + "\n" });
     }
-    const rom = fixHeader(ihxToBin(ihx, romSizeFor([...banks])), input.platform, input.title, banks.size > 0);
+    const rom = fixHeader(ihxToBin(ihx, romSizeFor([...banks])), input.platform === "gbc" ? "gbc" : "gb", input.title, banks.size > 0);
     return done({ ok: true, stage: "done", rom, romBytesUsed: used, ...(banks.size ? { banks: usage.banks } : {}), issues: parseIssues(log), log });
   }
 }
