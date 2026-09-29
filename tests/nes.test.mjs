@@ -79,3 +79,11 @@ test("nes C statics live in 7.75 KB of PRG-RAM (chr-ram-wram)", async () => {
   assert.equal(over.stage, "size");
   assert.ok(over.issues.some((i) => i.file === "link" && /overflow/i.test(i.message)), JSON.stringify(over.issues));
 });
+
+test("nes: a C file and an assembly file with the same name both link", async () => {
+  const asm = ".export _twice\n.segment \"CODE\"\n_twice: asl a\n  ldx #0\n  rts\n";
+  const c = '#include "nes_runtime.h"\nunsigned char __fastcall__ twice(unsigned char v);\nunsigned char helper(void) { return twice(21); }\n';
+  const main = '#include "nes_runtime.h"\nunsigned char helper(void);\n#define OUT (*(volatile unsigned char *)0x0500)\nvoid main(void) { OUT = helper(); for (;;) {} }\n';
+  const r = await tc.build({ platform: "nes", sources: { "main.c": main, "util.c": c, "util.s": asm } }, nesRuntime());
+  assert.ok(r.ok, r.log);
+});

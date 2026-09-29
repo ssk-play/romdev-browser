@@ -41,7 +41,7 @@ export class Cc65Toolchain {
       [`/work/${name}`]: source,
     };
     for (const [h, text] of Object.entries(headers)) files[`/work/${h}`] = text;
-    const out = `/work/${name.replace(/\.c$/, ".s")}`;
+    const out = `/work/${name}.s`;   // foo.c -> foo.c.s: never the name of a .s source
     const r = await runTool(this.loader, "cc65", ["-t", "nes", ...CC_OPT, ...CC_WARN, "-I", "/share/cc65/include", "-I", "/work", "-o", out, `/work/${name}`], {
       files,
       outputs: [out],
@@ -67,7 +67,7 @@ export class Cc65Toolchain {
   private runtimeObjects(rt: NesRuntime) {
     this.runtime ??= (async () => {
       const c = await this.compile("nes_runtime.c", rt.runtimeC, rt.headers);
-      const runtime = c.asm && (await this.assemble("nes_runtime.s", c.asm, {})).obj;
+      const runtime = c.asm && (await this.assemble("nes_runtime.c.s", c.asm, {})).obj;
       if (!runtime) throw new Error("bundled nes_runtime.c failed to build:\n" + c.log);
       const crt0 = await this.assemble("crt0.s", rt.crt0, {});
       if (!crt0.obj) throw new Error("bundled crt0 failed to assemble:\n" + crt0.log);
@@ -97,10 +97,10 @@ export class Cc65Toolchain {
         const c = await this.compile(name, text, headers);
         log += c.log;
         if (c.asm == null) return fail("compile", log);
-        const a = await this.assemble(name.replace(/\.c$/, ".s"), c.asm, asmIncludes);
+        const a = await this.assemble(`${name}.s`, c.asm, asmIncludes);
         log += a.log;
         if (!a.obj) return fail("assemble", log);
-        objects[name.replace(/\.c$/, ".o")] = a.obj;
+        objects[`${name}.o`] = a.obj;   // foo.c.o, apart from a foo.s source's foo.o
       } else if (/\.(s|asm)$/i.test(name)) {
         const a = await this.assemble(name, text, asmIncludes);
         log += a.log;

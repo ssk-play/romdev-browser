@@ -38,7 +38,7 @@ lifetimes are safe). Workers resolve `./wasm/*` relative to their own URL.
 ### Compiler worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.5.1/compiler.worker.js", { type: "module" });
+const w = new Worker("/lib/romdev-browser/0.5.2/compiler.worker.js", { type: "module" });
 w.postMessage({ type: "warmup", platform: "gbc" });        // optional: start the toolchain download (SDCC ~21 MB, cc65 ~5 MB)
 w.postMessage({ type: "build", id: 1, input: { platform: "gbc", sources: { "main.c": src }, title: "MY GAME" } });
 ```
@@ -61,7 +61,7 @@ VRAM queue, palette, scroll) and `nes_runtime.c` (neslib-shaped: `ppu_*`, `oam_s
 ### Emulator worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.5.1/emulator.worker.js", { type: "module" });
+const w = new Worker("/lib/romdev-browser/0.5.2/emulator.worker.js", { type: "module" });
 const off = canvas.transferControlToOffscreen();            // takes the core's screen size on load
 w.postMessage({ type: "init", canvas: off, platform: "gbc" }, [off]); // → {type:"ready"}; platform (optional) preloads its core
 w.postMessage({ type: "load", id: 1, rom, platform: "gbc", sram: null }); // → { width, height, fps }
