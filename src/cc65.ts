@@ -1,6 +1,7 @@
 // cc65 C (and ca65 assembly) → NES ROM, entirely in MEMFS. Mirrors romdev's NES C project recipe: `cc65 -t nes`,
-// `ca65 -t nes`, and ld65 with romdev's chr-ram-runtime config and crt0 (iNES header: 32 KB PRG-ROM, CHR-RAM, vertical
-// mirroring, battery PRG-RAM at $6000; the NMI handler runs OAM DMA, the VRAM queue, palette and scroll), with
+// `ca65 -t nes`, and ld65 with romdev's chr-ram-wram config and crt0 (iNES header: 32 KB PRG-ROM, CHR-RAM, vertical
+// mirroring, battery PRG-RAM at $6000 holding the C BSS/DATA at $6100-$7FFF and a 256-byte save area below; the NMI
+// handler runs OAM DMA, the VRAM queue, palette and scroll), with
 // nes_runtime.c always linked and nes.lib from the cc65 share tree.
 import { runTool, shareFiles, type ToolLoader } from "./wasmtool.ts";
 import type { BuildInput, BuildIssue, BuildResult } from "./toolchain.ts";
@@ -10,14 +11,16 @@ export type Cc65Tool = "cc65" | "ca65" | "ld65";
 export interface NesRuntime {
   headers: Record<string, string>; // nes_runtime.h
   runtimeC: string; // nes_runtime.c
-  crt0: string; // chr-ram-runtime.crt0.s
-  cfg: string; // chr-ram-runtime.cfg
+  crt0: string; // chr-ram-wram.crt0.s
+  cfg: string; // chr-ram-wram.cfg
 }
 
 /** PRG-ROM the config gives code and data: $8000-$FFF9 (the vectors take the last 6 bytes). */
 export const NES_PRG_SIZE = 0x7ffa;
 // romdev's warning set for C builds (valid cc65 -W names that catch real mistakes)
 const CC_WARN = ["-W", "unused-var,unused-func,unused-label,const-comparison,struct-param,pointer-sign"];
+// plain diagnostics: no ANSI colours or curly quotes in what the build reports
+const PLAIN = ["--color", "off", "--no-utf8"];
 // segments the config loads into PRG-ROM
 const PRG_SEGMENTS = new Set(["STARTUP", "LOWCODE", "ONCE", "CODE", "RODATA", "DATA"]);
 
@@ -52,7 +55,7 @@ export class Cc65Toolchain {
     };
     for (const [n, text] of Object.entries(includes)) if (n !== name) files[`/work/${n}`] = text;
     const out = `/work/${name.replace(/\.(s|asm)$/i, "")}.o`;
-    const r = await runTool(this.loader, "ca65", ["-t", "nes", "-I", "/share/cc65/asminc", "-I", "/work", "-o", out, `/work/${name}`], {
+    const r = await runTool(this.loader, "ca65", ["-t", "nes", ...PLAIN, "-I", "/share/cc65/asminc", "-I", "/work", "-o", out, `/work/${name}`], {
       files,
       binaries: [out],
     });
@@ -118,7 +121,7 @@ export class Cc65Toolchain {
     const link = await runTool(
       this.loader,
       "ld65",
-      ["-C", "/work/nes.cfg", "-o", "/work/out.nes", "-m", "/work/out.map", "/work/crt0.o", "/work/nes_runtime.o",
+      ["-C", "/work/nes.cfg", ...PLAIN, "-o", "/work/out.nes", "-m", "/work/out.map", "/work/crt0.o", "/work/nes_runtime.o",
         ...Object.keys(objects).map((n) => `/work/${n}`), "/share/cc65/lib/nes.lib"],
       { files, outputs: ["/work/out.map"], binaries: ["/work/out.nes"] },
     );
@@ -140,18 +143,21 @@ export function prgBytesUsed(map: string | null): number {
   return n;
 }
 
-// cc65 / ca65: "main.c:12: Error: ..." (newer) or "main.c(12): Error: ..." (older); ld65: "ld65: Error: ...".
+// cc65 / ca65: "main.c:12: Error: ..." (older: "main.c(12): ..."); ld65: "/work/nes.cfg:44: Warning: Segment 'BSS'
+// overflows memory area 'RAM' by 471 bytes" and "<program>: Error: ..." (the WASM build names itself "this").
 const DIAG = /^(?:\/work\/)?([\w.\-/]+)(?::(\d+)|\((\d+)\)):\s*(Error|Warning|Fatal)\b[^:]*:\s*(.*)$/i;
-const LINK = /^ld65:\s*(Error|Warning|Fatal)\b[^:]*:\s*(.*)$/i;
+const LINK = /^[\w.]+:\s*(Error|Warning|Fatal)\b[^:]*:\s*(.*)$/i;
+const ANSI = /\x1b\[[0-9;]*m/g;
 
 export function parseCc65Issues(log: string): BuildIssue[] {
   const issues: BuildIssue[] = [];
   const seen = new Set<string>();
   for (const raw of log.split(/\r?\n/)) {
-    const line = raw.trim();
+    const line = raw.replace(ANSI, "").trim();
     let issue: BuildIssue | null = null;
     let m = DIAG.exec(line);
-    if (m) issue = { file: m[1], line: Number(m[2] ?? m[3]), severity: /warning/i.test(m[4]) ? "warning" : "error", message: m[5] };
+    if (m && /\.cfg$/.test(m[1])) issue = { file: "link", line: null, severity: /overflow/i.test(m[5]) || !/warning/i.test(m[4]) ? "error" : "warning", message: m[5] };
+    else if (m) issue = { file: m[1], line: Number(m[2] ?? m[3]), severity: /warning/i.test(m[4]) ? "warning" : "error", message: m[5] };
     else if ((m = LINK.exec(line))) issue = { file: "link", line: null, severity: /warning/i.test(m[1]) ? "warning" : "error", message: m[2] };
     else if (/^\[abort\]/.test(line)) issue = { file: "toolchain", line: null, severity: "error", message: line };
     if (!issue) continue;
