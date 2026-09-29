@@ -2,7 +2,7 @@
 // GB project recipe (gb_crt0.s, _CODE=$0150, _DATA=$C200, rgbfix-equivalent header).
 // Environment-agnostic: the caller supplies the glue factories + compiled wasm
 // modules, so the same code runs in a Web Worker and in Node tests.
-import { fixHeader, ihxHighWaterMark, ihxToBin, ROM_SIZE, type Platform } from "./rom.ts";
+import { BANK, fixHeader, ihxToBin, ihxUsage, ROM_SIZE, romSizeFor, type Platform } from "./rom.ts";
 
 export type ToolName = "mcpp" | "sdcc" | "sdasgb" | "sdld";
 
@@ -39,6 +39,8 @@ export interface BuildResult {
   stage: "compile" | "assemble" | "link" | "size" | "done";
   rom: Uint8Array | null;
   romBytesUsed: number;
+  /** bytes used in each switchable bank (n >= 2), when the game has any */
+  banks?: Record<number, number>;
   issues: BuildIssue[];
   log: string;
   ms: number;
@@ -215,6 +217,20 @@ export class Toolchain {
     if (Object.keys(objects).length === 0) {
       return done({ ok: false, stage: "compile", rom: null, romBytesUsed: 0, issues: [{ file: "main.c", line: null, severity: "error", message: "no .c source" }], log });
     }
+    // Switchable ROM banks: what a source places in area _CODE_<n> (n >= 2: `#pragma constseg CODE_2`, sdcc adds the underscore) is linked
+    // at bank n's window ($4000) and written at n x 16 KB; the cart becomes MBC5. Code that switches banks must sit in
+    // the first 16 KB, so the runtime is linked right after crt0 and sources keep the order they come in.
+    const banks = new Set<number>();
+    for (const [name, rel] of Object.entries(objects))
+      for (const m of rel.matchAll(/^A _CODE_(\d+) size ([0-9A-Fa-f]+)/gm)) {
+        if (!parseInt(m[2], 16)) continue;
+        const bank = Number(m[1]);
+        if (bank < 2) {
+          const message = `bank ${bank}: switchable banks start at 2 (banks 0 and 1 are the fixed 32 KB)`;
+          return done({ ok: false, stage: "link", rom: null, romBytesUsed: 0, issues: [{ file: name.replace(/\.rel$/, ".c"), line: null, severity: "error", message }], log: log + message + "\n" });
+        }
+        banks.add(bank);
+      }
     const rtObjs = await this.runtimeObjects(input.platform, rt);
     const files: Record<string, Uint8Array | string> = {
       ...(await this.shareFiles("lib/sm83/", "/share/sdcc/lib/sm83/")),
@@ -228,10 +244,10 @@ export class Toolchain {
         "-n", "-mjwx", "-i",
         "-b", `_CODE=0x${CODE_LOC.toString(16)}`,
         "-b", `_DATA=0x${DATA_LOC.toString(16)}`,
+        ...[...banks].flatMap((b) => ["-b", `_CODE_${b}=0x${((b << 16) | BANK).toString(16)}`]),
         "-k", "/share/sdcc/lib/sm83",
-        "/work/out.ihx", "/work/crt0.rel",
+        "/work/out.ihx", "/work/crt0.rel", "/work/gb_runtime.rel",
         ...Object.keys(objects).map((n) => `/work/${n}`),
-        "/work/gb_runtime.rel",
         "-l", "sm83.lib", "-e",
       ],
       { files, outputs: ["/work/out.ihx"] },
@@ -242,13 +258,18 @@ export class Toolchain {
     if (link.code !== 0 || !ihx || linkIssues.some((i) => i.severity === "error")) {
       return done({ ok: false, stage: "link", rom: null, romBytesUsed: 0, issues: parseIssues(log), log });
     }
-    const used = ihxHighWaterMark(ihx);
-    if (used > ROM_SIZE) {
-      const msg = `ROM is ${used} bytes; the 32 KB (no bank switching) limit is ${ROM_SIZE}. Shrink data tables or code.`;
-      return done({ ok: false, stage: "size", rom: null, romBytesUsed: used, issues: [{ file: "link", line: null, severity: "error", message: msg }], log: log + msg + "\n" });
+    const usage = ihxUsage(ihx);
+    const used = usage.fixed + Object.values(usage.banks).reduce((a, b) => a + b, 0);
+    const over = [
+      usage.fixed > ROM_SIZE && `the fixed ROM (code and data outside banks) is ${usage.fixed} bytes; it holds ${ROM_SIZE}. Move big data into a bank or shrink it.`,
+      ...Object.entries(usage.banks).filter(([, n]) => n > BANK).map(([b, n]) => `bank ${b} is ${n} bytes; a bank holds ${BANK}. Spread the data over more banks.`),
+    ].filter((m): m is string => !!m);
+    if (over.length) {
+      const issues = over.map((message) => ({ file: "link", line: null, severity: "error" as const, message }));
+      return done({ ok: false, stage: "size", rom: null, romBytesUsed: used, banks: usage.banks, issues, log: log + over.join("\n") + "\n" });
     }
-    const rom = fixHeader(ihxToBin(ihx, ROM_SIZE), input.platform, input.title);
-    return done({ ok: true, stage: "done", rom, romBytesUsed: used, issues: parseIssues(log), log });
+    const rom = fixHeader(ihxToBin(ihx, romSizeFor([...banks])), input.platform, input.title, banks.size > 0);
+    return done({ ok: true, stage: "done", rom, romBytesUsed: used, ...(banks.size ? { banks: usage.banks } : {}), issues: parseIssues(log), log });
   }
 }
 
