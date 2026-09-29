@@ -17,6 +17,8 @@ export interface NesRuntime {
 
 /** PRG-ROM the config gives code and data: $8000-$FFF9 (the vectors take the last 6 bytes). */
 export const NES_PRG_SIZE = 0x7ffa;
+// optimised like neslib projects (-O, inline, register variables, inline stdlib): unoptimised cc65 code misses frames
+const CC_OPT = ["-Oirs"];
 // romdev's warning set for C builds (valid cc65 -W names that catch real mistakes)
 const CC_WARN = ["-W", "unused-var,unused-func,unused-label,const-comparison,struct-param,pointer-sign"];
 // plain diagnostics: no ANSI colours or curly quotes in what the build reports
@@ -40,7 +42,7 @@ export class Cc65Toolchain {
     };
     for (const [h, text] of Object.entries(headers)) files[`/work/${h}`] = text;
     const out = `/work/${name.replace(/\.c$/, ".s")}`;
-    const r = await runTool(this.loader, "cc65", ["-t", "nes", ...CC_WARN, "-I", "/share/cc65/include", "-I", "/work", "-o", out, `/work/${name}`], {
+    const r = await runTool(this.loader, "cc65", ["-t", "nes", ...CC_OPT, ...CC_WARN, "-I", "/share/cc65/include", "-I", "/work", "-o", out, `/work/${name}`], {
       files,
       outputs: [out],
     });

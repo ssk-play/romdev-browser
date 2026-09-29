@@ -38,7 +38,7 @@ lifetimes are safe). Workers resolve `./wasm/*` relative to their own URL.
 ### Compiler worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.5.0/compiler.worker.js", { type: "module" });
+const w = new Worker("/lib/romdev-browser/0.5.1/compiler.worker.js", { type: "module" });
 w.postMessage({ type: "warmup", platform: "gbc" });        // optional: start the toolchain download (SDCC ~21 MB, cc65 ~5 MB)
 w.postMessage({ type: "build", id: 1, input: { platform: "gbc", sources: { "main.c": src }, title: "MY GAME" } });
 ```
@@ -52,7 +52,7 @@ Build recipe (romdev's GB C project recipe): the bundled `gb_crt0.s` (MBC1+RAM+B
 vectors, BSS init) and `gb_runtime.c` are always linked; `gb_hardware.h`, `gb_runtime.h`, `font.h`
 are on the include path; `_CODE=$0150`, `_DATA=$C200`; 32 KB, plus MBC5 banks for `#pragma constseg/codeseg CODE_<n>`.
 
-NES (romdev's NES C project): `cc65 -t nes` and `ca65 -t nes` per source (`.c`, `.s`), linked by ld65 with romdev's
+NES (romdev's NES C project): `cc65 -t nes -Oirs` and `ca65 -t nes` per source (`.c`, `.s`), linked by ld65 with romdev's
 `chr-ram-wram` config and crt0 (iNES header: 32 KB PRG-ROM, CHR-RAM, vertical mirroring, battery PRG-RAM at
 `$6000`; C BSS/DATA at `$6100-$7FFF`, 7.75 KB; `$6000-$60FF` is a save area the crt0 never clears; NMI: OAM DMA,
 VRAM queue, palette, scroll) and `nes_runtime.c` (neslib-shaped: `ppu_*`, `oam_spr`,
@@ -61,7 +61,7 @@ VRAM queue, palette, scroll) and `nes_runtime.c` (neslib-shaped: `ppu_*`, `oam_s
 ### Emulator worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.5.0/emulator.worker.js", { type: "module" });
+const w = new Worker("/lib/romdev-browser/0.5.1/emulator.worker.js", { type: "module" });
 const off = canvas.transferControlToOffscreen();            // takes the core's screen size on load
 w.postMessage({ type: "init", canvas: off, platform: "gbc" }, [off]); // → {type:"ready"}; platform (optional) preloads its core
 w.postMessage({ type: "load", id: 1, rom, platform: "gbc", sram: null }); // → { width, height, fps }
