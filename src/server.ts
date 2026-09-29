@@ -6,7 +6,8 @@
 //   GET  /health                    { ok, version }
 //   POST /build { platform, sources: { "main.c": ..., "x.c": ... }, title? }
 //        -> { ok, stage, rom: base64|null, romBytesUsed, banks: { n: bytes }|null, issues, log, ms }
-//        Data in `#pragma constseg CODE_<n>` (n >= 2) goes to switchable ROM bank n; the cart becomes MBC5.
+//        Data (`#pragma constseg CODE_<n>`, n = 2-511) and `__banked` code (`#pragma codeseg CODE_<n>`) go to
+//        switchable ROM bank n; the cart becomes MBC5.
 //   POST /run   { platform, rom: base64, frames, input: [{ frame, until, buttons }], shots: [frame], every,
 //                 memory: [{ region, offset, length }] }
 //        -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png: base64 }], sram: base64|null, ms }

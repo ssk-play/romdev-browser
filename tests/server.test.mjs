@@ -27,3 +27,50 @@ test("server builds and runs a GBC game over HTTP", async (t) => {
   assert.notEqual(r.shots[0].png, r.shots[1].png, "Start should change the screen");
   assert.equal(Buffer.from(r.sram, "base64").length, 8192);
 });
+
+test("server builds and runs __banked code and data past 4 MB (MBC5)", async (t) => {
+  const port = 18000 + Math.floor(Math.random() * 1000);
+  const proc = spawn(process.execPath, [path.join(root, "dist", "server.mjs")], { env: { ...process.env, PORT: String(port) }, stdio: "pipe" });
+  t.after(() => proc.kill());
+  await new Promise((ok, fail) => { proc.stdout.on("data", ok); proc.on("exit", fail); });
+  const post = async (p, body) => (await fetch(`http://127.0.0.1:${port}${p}`, { method: "POST", body: JSON.stringify(body) })).json();
+  for (const platform of ["gb", "gbc"]) {
+    const sources = {
+      "main.c": `#include "gb_hardware.h"
+#include "gb_runtime.h"
+unsigned char far_sum(unsigned char a, unsigned char b) __banked;
+extern const unsigned char far_data[];
+__at (0xD000) unsigned char result;
+__at (0xD001) unsigned char read_hi;
+__at (0xD002) unsigned char bank_after;
+void main(void) {
+  unsigned int back;
+  result = far_sum(3, 4);
+  back = current_rom_bank;
+  SWITCH_ROM(300);
+  read_hi = (unsigned char)(far_data[0] + far_data[2]);
+  SWITCH_ROM(back);
+  bank_after = (unsigned char)current_rom_bank;
+  for (;;) wait_vblank();
+}
+`,
+      "far.c": `#include "gb_runtime.h"
+#pragma codeseg CODE_3
+#pragma constseg CODE_3
+static const unsigned char magic[] = { 40, 2 };
+unsigned char far_sum(unsigned char a, unsigned char b) __banked { return (unsigned char)(a + b + magic[0] + magic[1]); }
+`,
+      "high.c": "#pragma constseg CODE_300\nconst unsigned char far_data[] = { 0x5A, 0xA5, 0x3C };\n",
+    };
+    const b = await post("/build", { platform, sources });
+    assert.ok(b.ok, b.log);
+    assert.deepEqual(Object.keys(b.banks).map(Number), [3, 300]);
+    const rom = Buffer.from(b.rom, "base64");
+    assert.equal(rom.length, 8 * 1024 * 1024);
+    assert.deepEqual([rom[0x147], rom[0x148]], [0x1b, 8], "MBC5 + RAM + battery, 8 MB");
+    assert.deepEqual([...rom.subarray(300 * 0x4000, 300 * 0x4000 + 3)], [0x5a, 0xa5, 0x3c]);
+    const r = await post("/run", { platform, rom: b.rom, frames: 20, memory: [{ offset: 0x1000, length: 3 }] });
+    // far_sum = 3 + 4 + 40 + 2 = 0x31, bank 300 read 0x5A + 0x3C = 0x96, back in bank 1
+    assert.equal(r.rows.at(-1).memory[0], "319601", platform);
+  }
+});
