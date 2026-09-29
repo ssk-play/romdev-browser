@@ -2,11 +2,12 @@
 // see README.md for the documented shapes (clients may implement them independently).
 import type { BuildInput, BuildResult } from "./toolchain.ts";
 
-export type Platform = "gb" | "gbc";
+export type Platform = "gb" | "gbc" | "nes";
 export type Buttons = Partial<Record<"up" | "down" | "left" | "right" | "a" | "b" | "start" | "select", boolean>>;
 
 // ── compiler.worker.js ──
-export type CompilerRequest = { type: "warmup" } | { type: "build"; id: number; input: BuildInput };
+/** `warmup` downloads the platform's toolchain early (gbc when none is named). */
+export type CompilerRequest = { type: "warmup"; platform?: Platform } | { type: "build"; id: number; input: BuildInput };
 export type CompilerEvent =
   | { type: "progress"; loaded: number; total: number }
   | { type: "ready" }

@@ -34,8 +34,14 @@ for (const t of ["mcpp", "sdcc", "sdasgb", "sdld"]) {
   copyGlue(path.join(sdcc, "wasm", `${t}.js`), path.join(wasm, `${t}.mjs`));
   copyFileSync(path.join(sdcc, "wasm", `${t}.wasm`), path.join(wasm, `${t}.wasm`));
 }
+// cc65 (NES): the compiler, assembler and linker
+const cc65 = pkgDir("romdev-toolchain-cc65");
+for (const t of ["cc65", "ca65", "ld65"]) {
+  copyGlue(path.join(cc65, "wasm", `${t}.js`), path.join(wasm, `${t}.mjs`));
+  copyFileSync(path.join(cc65, "wasm", `${t}.wasm`), path.join(wasm, `${t}.wasm`));
+}
 // every core in src/platforms.ts, served as <core>.mjs + <core>.wasm
-for (const [core, pkg] of [["gambatte", "romdev-core-gambatte"]]) {
+for (const [core, pkg] of [["gambatte", "romdev-core-gambatte"], ["fceumm", "romdev-core-fceumm"]]) {
   const dir = pkgDir(pkg);
   copyGlue(path.join(dir, "wasm", `${core}_libretro.js`), path.join(wasm, `${core}.mjs`));
   copyFileSync(path.join(dir, "wasm", `${core}_libretro.wasm`), path.join(wasm, `${core}.wasm`));
@@ -60,6 +66,21 @@ walk(path.join(share, "include", "asm", "sm83"));
 walk(path.join(share, "lib", "sm83"));
 writeFileSync(path.join(wasm, "sdcc-share.json"), JSON.stringify(files));
 
+// cc65 share tree trimmed to what a NES build reads: C headers, ca65 includes, nes.lib.
+const cc65Share = path.join(cc65, "share", "cc65");
+const cc65Files = {};
+const walkInto = (into, base, dir) => {
+  for (const name of readdirSync(dir)) {
+    const p = path.join(dir, name);
+    if (statSync(p).isDirectory()) walkInto(into, base, p);
+    else into[path.relative(base, p).split(path.sep).join("/")] = readFileSync(p).toString("base64");
+  }
+};
+walkInto(cc65Files, cc65Share, path.join(cc65Share, "include"));
+walkInto(cc65Files, cc65Share, path.join(cc65Share, "asminc"));
+cc65Files["lib/nes.lib"] = readFileSync(path.join(cc65Share, "lib", "nes.lib")).toString("base64");
+writeFileSync(path.join(wasm, "cc65-share.json"), JSON.stringify(cc65Files));
+
 const sizes = Object.fromEntries(readdirSync(wasm).map((f) => [f, statSync(path.join(wasm, f)).size]));
 
 // romdev-core-host lazily imports Node-only helpers and treats a failed import as
@@ -83,7 +104,7 @@ await build({
   minify: true,
   sourcemap: true,
   legalComments: "eof",
-  loader: { ".c": "text", ".h": "text", ".s": "text" },
+  loader: { ".c": "text", ".h": "text", ".s": "text", ".cfg": "text" },
   define: { __ASSET_SIZES__: JSON.stringify(sizes) },
   plugins: [nodeOnly],
   logLevel: "warning",
@@ -108,7 +129,7 @@ await build({
   target: "node22",
   sourcemap: true,
   legalComments: "eof",
-  loader: { ".c": "text", ".h": "text", ".s": "text" },
+  loader: { ".c": "text", ".h": "text", ".s": "text", ".cfg": "text" },
   define: { __VERSION__: JSON.stringify(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version) },
   plugins: [serverOnly],
   logLevel: "warning",
@@ -134,6 +155,8 @@ const manifest = {
   components: {
     "romdev-toolchain-sdcc": pkgVersion("romdev-toolchain-sdcc"),
     "romdev-core-gambatte": pkgVersion("romdev-core-gambatte"),
+    "romdev-toolchain-cc65": pkgVersion("romdev-toolchain-cc65"),
+    "romdev-core-fceumm": pkgVersion("romdev-core-fceumm"),
     "romdev-core-host": pkgVersion("romdev-core-host"),
     romdev: readFileSync(path.join(root, "vendor", "romdev", "COMMIT"), "utf8").trim(),
   },

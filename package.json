@@ -1,7 +1,7 @@
 {
   "name": "romdev-browser",
-  "version": "0.3.0",
-  "description": "Run romdev's Game Boy / Game Boy Color toolchain (SDCC sm83) and emulator (gambatte) in the browser, inside Web Workers with a postMessage protocol.",
+  "version": "0.4.0",
+  "description": "Run romdev's toolchains (SDCC for Game Boy / Game Boy Color, cc65 for NES) and emulator cores (gambatte, fceumm) in the browser, inside Web Workers with a postMessage protocol, and headless over HTTP.",
   "license": "GPL-2.0-only",
   "type": "module",
   "repository": {
@@ -28,8 +28,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "romdev-core-fceumm": "file:../romdev/packages/romdev-core-fceumm",
     "romdev-core-gambatte": "file:../romdev/packages/romdev-core-gambatte",
     "romdev-core-host": "file:../romdev/packages/romdev-core-host",
+    "romdev-toolchain-cc65": "file:../romdev/packages/romdev-toolchain-cc65",
     "romdev-toolchain-sdcc": "file:../romdev/packages/romdev-toolchain-sdcc"
   },
   "devDependencies": {

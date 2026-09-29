@@ -1,3 +1,4 @@
+// Game Boy ROM layout (the SDCC toolchain's output); NES ROMs come out of ld65 whole.
 export type Platform = "gb" | "gbc";
 
 export const ROM_SIZE = 0x8000; // the fixed 32 KB: bank 0 and bank 1, as linked from $0000
