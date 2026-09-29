@@ -15,7 +15,8 @@
 ;   7. increment nmi_counter so `ppu_wait_nmi()` can return
 ;   8. restore A/X/Y, rti
 ;
-; Loaded silently by the linkerConfig:"chr-ram" preset.
+; Loaded silently by the linkerConfig:"chr-ram-wram" preset (identical to chr-ram-runtime.crt0.s; the
+; config decides where RAM is).
 
         .export         _exit
         .export         __STARTUP__ : absolute = 1

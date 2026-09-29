@@ -69,3 +69,13 @@ test("PRG usage comes from the ld65 map", () => {
   const map = "Segment list:\n-------------\nName                   Start     End    Size  Align\n----------------------------------------------------\nCODE                  008000  0081FF  000200  00001\nRODATA                008200  00820F  000010  00001\nBSS                   000300  0003FF  000100  00001\n";
   assert.equal(prgBytesUsed(map), 0x210);
 });
+
+test("nes C statics live in 7.75 KB of PRG-RAM (chr-ram-wram)", async () => {
+  const src = '#include "nes_runtime.h"\nstatic uint8_t big[7000];\nvoid main(void) {\n  big[6999] = 1;\n  for (;;) {}\n}\n';
+  const r = await tc.build({ platform: "nes", sources: { "main.c": src } }, nesRuntime());
+  assert.ok(r.ok, r.log);
+  const over = await tc.build({ platform: "nes", sources: { "main.c": src.replace("7000", "8000").replace("6999", "7999") } }, nesRuntime());
+  assert.equal(over.ok, false);
+  assert.equal(over.stage, "size");
+  assert.ok(over.issues.some((i) => i.file === "link" && /overflow/i.test(i.message)), JSON.stringify(over.issues));
+});

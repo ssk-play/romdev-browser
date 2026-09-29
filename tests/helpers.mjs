@@ -38,7 +38,7 @@ export function runtimeFor(platform) {
 export function nesRuntime() {
   const dir = path.join(root, "vendor", "romdev", "nes");
   const read = (f) => readFileSync(path.join(dir, f), "utf8");
-  return { headers: { "nes_runtime.h": read("nes_runtime.h") }, runtimeC: read("nes_runtime.c"), crt0: read("chr-ram-runtime.crt0.s"), cfg: read("chr-ram-runtime.cfg") };
+  return { headers: { "nes_runtime.h": read("nes_runtime.h") }, runtimeC: read("nes_runtime.c"), crt0: read("chr-ram-wram.crt0.s"), cfg: read("chr-ram-wram.cfg") };
 }
 
 export function template(platform, name) {

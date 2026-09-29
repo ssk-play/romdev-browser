@@ -9,8 +9,8 @@ import gbcCrt0 from "../vendor/romdev/gbc/gb_crt0.s";
 import fontH from "../vendor/romdev/gbc/font.h";
 import nesRuntimeH from "../vendor/romdev/nes/nes_runtime.h";
 import nesRuntimeC from "../vendor/romdev/nes/nes_runtime.c";
-import nesCrt0 from "../vendor/romdev/nes/chr-ram-runtime.crt0.s";
-import nesCfg from "../vendor/romdev/nes/chr-ram-runtime.cfg";
+import nesCrt0 from "../vendor/romdev/nes/chr-ram-wram.crt0.s";
+import nesCfg from "../vendor/romdev/nes/chr-ram-wram.cfg";
 
 const headers = { "gb_hardware.h": gbHardware, "gb_runtime.h": gbRuntimeH, "font.h": fontH };
 export const RUNTIME: Record<"gb" | "gbc", PlatformRuntime> = {
