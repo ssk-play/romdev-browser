@@ -154,7 +154,10 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
       loaded = true;
       if (req.sram?.length) {
         try {
-          if (h.regionSize("save_ram") >= req.sram.length) h.writeMemory("save_ram", 0, req.sram);
+          if (h.regionSize("save_ram") >= req.sram.length) {
+            h.writeMemory("save_ram", 0, req.sram);
+            h.reset(); // the game read its (empty) battery RAM while loading: boot it again with the save in place
+          }
         } catch {
           /* no battery RAM on this cart */
         }
