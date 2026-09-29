@@ -225,8 +225,9 @@ export class Toolchain {
       for (const m of rel.matchAll(/^A _CODE_(\d+) size ([0-9A-Fa-f]+)/gm)) {
         if (!parseInt(m[2], 16)) continue;
         const bank = Number(m[1]);
-        if (bank < 2) {
-          const message = `bank ${bank}: switchable banks start at 2 (banks 0 and 1 are the fixed 32 KB)`;
+        if (bank < 2 || bank > 255) {
+          // sdld addresses are 24-bit: bank n links at n<<16 | $4000, so 256 and up would wrap onto 0-255
+          const message = bank < 2 ? `bank ${bank}: switchable banks start at 2 (banks 0 and 1 are the fixed 32 KB)` : `bank ${bank}: the last bank is 255 (4 MB)`;
           return done({ ok: false, stage: "link", rom: null, romBytesUsed: 0, issues: [{ file: name.replace(/\.rel$/, ".c"), line: null, severity: "error", message }], log: log + message + "\n" });
         }
         banks.add(bank);
