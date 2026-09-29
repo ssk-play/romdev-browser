@@ -17,13 +17,19 @@ export type CompilerEvent =
 export interface ProbeResult {
   blank: boolean;
   inputReactive: boolean;
-  /** 160x144 PNG data URL of the gameplay frame. */
+  /** PNG data URL of the gameplay frame at the core's screen size. */
   screenshot: string;
   /** 2x PNG data URLs: after boot, after Start, after holding Right+A. */
   screens: string[];
 }
+/** The `load` reply: the core's screen (the canvas is set to it) and its frame rate, for the page's pacing. */
+export interface LoadResult {
+  width: number;
+  height: number;
+  fps: number;
+}
 export type EmulatorRequest =
-  | { type: "init"; canvas: OffscreenCanvas }
+  | { type: "init"; canvas: OffscreenCanvas; platform?: Platform }
   | { type: "load"; id: number; rom: Uint8Array; platform: Platform; sram?: Uint8Array | null }
   | { type: "step"; frames: number; buttons: Buttons }
   | { type: "reset"; id: number }

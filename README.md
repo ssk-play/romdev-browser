@@ -36,7 +36,7 @@ lifetimes are safe). Workers resolve `./wasm/*` relative to their own URL.
 ### Compiler worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.2.0/compiler.worker.js", { type: "module" });
+const w = new Worker("/lib/romdev-browser/0.3.0/compiler.worker.js", { type: "module" });
 w.postMessage({ type: "warmup" });                         // optional: start the ~21 MB download
 w.postMessage({ type: "build", id: 1, input: { platform: "gbc", sources: { "main.c": src }, title: "MY GAME" } });
 ```
@@ -53,15 +53,16 @@ are on the include path; `_CODE=$0150`, `_DATA=$C200`; 32 KB, no bank switching.
 ### Emulator worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.2.0/emulator.worker.js", { type: "module" });
-const off = canvas.transferControlToOffscreen();            // canvas is 160x144
-w.postMessage({ type: "init", canvas: off }, [off]);        // → {type:"ready"}
-w.postMessage({ type: "load", id: 1, rom, platform: "gbc", sram: null });
+const w = new Worker("/lib/romdev-browser/0.3.0/emulator.worker.js", { type: "module" });
+const off = canvas.transferControlToOffscreen();            // takes the core's screen size on load
+w.postMessage({ type: "init", canvas: off, platform: "gbc" }, [off]); // → {type:"ready"}; platform (optional) preloads its core
+w.postMessage({ type: "load", id: 1, rom, platform: "gbc", sram: null }); // → { width, height, fps }
 w.postMessage({ type: "step", frames: 1, buttons: { right: true, a: false } }); // from your rAF loop
 ```
 
 Requests with an `id` get `{type:"reply", id, ok, value | error}`:
-`load`, `reset`, `readSram` (battery RAM bytes or null), `probe` →
+`load` (→ `{ width, height, fps }`: the core's screen, which the canvas now has, and the frame rate to step at), `reset`,
+`readSram` (battery RAM bytes or null), `probe` →
 `{ blank, inputReactive, screenshot, screens }` (boots, presses Start and A, compares idle vs
 Right+A from one save state, then restores battery RAM and resets). `step` has no reply and is
 ignored while a request is running. Audio arrives as `{type:"audio", pcm: Int16Array (interleaved

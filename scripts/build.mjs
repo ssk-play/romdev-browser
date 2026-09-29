@@ -34,9 +34,12 @@ for (const t of ["mcpp", "sdcc", "sdasgb", "sdld"]) {
   copyGlue(path.join(sdcc, "wasm", `${t}.js`), path.join(wasm, `${t}.mjs`));
   copyFileSync(path.join(sdcc, "wasm", `${t}.wasm`), path.join(wasm, `${t}.wasm`));
 }
-const gambatte = pkgDir("romdev-core-gambatte");
-copyGlue(path.join(gambatte, "wasm", "gambatte_libretro.js"), path.join(wasm, "gambatte.mjs"));
-copyFileSync(path.join(gambatte, "wasm", "gambatte_libretro.wasm"), path.join(wasm, "gambatte.wasm"));
+// every core in src/platforms.ts, served as <core>.mjs + <core>.wasm
+for (const [core, pkg] of [["gambatte", "romdev-core-gambatte"]]) {
+  const dir = pkgDir(pkg);
+  copyGlue(path.join(dir, "wasm", `${core}_libretro.js`), path.join(wasm, `${core}.mjs`));
+  copyFileSync(path.join(dir, "wasm", `${core}_libretro.wasm`), path.join(wasm, `${core}.wasm`));
+}
 
 // SDCC share tree trimmed to what an sm83 build reads.
 const share = path.join(sdcc, "share", "sdcc");

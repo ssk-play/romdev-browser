@@ -1,48 +1,57 @@
 /// <reference lib="webworker" />
-// gambatte (romdev-core-gambatte) driven by romdev-core-host in bytes-only mode, drawing to an
-// OffscreenCanvas handed over by the page. Frame pacing and input timing belong to the page:
-// it sends {type:"step", frames, buttons} from its animation loop.
+// The platform's libretro core (see platforms.ts) driven by romdev-core-host in bytes-only mode, drawing to an
+// OffscreenCanvas handed over by the page; the canvas takes the core's screen size when a ROM loads. Frame pacing and
+// input timing belong to the page: it sends {type:"step", frames, buttons} from its animation loop at the core's fps.
 import { LibretroHost } from "romdev-core-host";
-import type { Buttons, EmulatorEvent, EmulatorRequest, ProbeResult } from "./protocol.ts";
+import { CORES, isPlatform, type Core } from "./platforms.ts";
+import type { Buttons, EmulatorEvent, EmulatorRequest, LoadResult, ProbeResult } from "./protocol.ts";
 
-const W = 160;
-const H = 144;
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 const post = (m: EmulatorEvent, transfer: Transferable[] = []) => scope.postMessage(m, transfer);
 const asset = (name: string) => new URL(`./wasm/${name}`, import.meta.url);
 
-let host: LibretroHost | null = null;
-let hostReady: Promise<LibretroHost> | null = null;
+const hosts = new Map<Core, Promise<LibretroHost>>();
+let host: LibretroHost | null = null; // the core holding the loaded ROM
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let image: ImageData | null = null;
 let loaded = false;
 let busy = 0; // requests in flight (probe awaits PNG encoding); steps are dropped meanwhile
 
-function ensureHost() {
-  hostReady ??= (async () => {
-    const [factory, wasm] = await Promise.all([
-      import(/* @vite-ignore */ asset("gambatte.mjs").href).then((m) => m.default),
-      fetch(asset("gambatte.wasm")).then((r) => r.arrayBuffer()),
-    ]);
-    const h = new LibretroHost();
-    await h.loadCore({ factory, wasmBinary: new Uint8Array(wasm), io: false });
-    host = h;
-    return h;
-  })();
-  return hostReady;
+function hostFor(core: Core) {
+  let ready = hosts.get(core);
+  if (!ready) {
+    ready = (async () => {
+      const [factory, wasm] = await Promise.all([
+        import(/* @vite-ignore */ asset(`${core}.mjs`).href).then((m) => m.default),
+        fetch(asset(`${core}.wasm`)).then((r) => r.arrayBuffer()),
+      ]);
+      const h = new LibretroHost();
+      await h.loadCore({ factory, wasmBinary: new Uint8Array(wasm), io: false });
+      return h;
+    })();
+    hosts.set(core, ready);
+    ready.catch(() => hosts.delete(core)); // a failed download is tried again by the next load
+  }
+  return ready;
 }
 
-function frameRgba(): Uint8ClampedArray | null {
+/** The core's current frame at its own size. */
+function frame(): { rgba: Uint8ClampedArray; width: number; height: number } | null {
   if (!host) return null;
   const { rgba, width, height } = host.screenshotRgba();
-  if (width !== W || height !== H) return null;
-  return rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+  if (!width || !height) return null;
+  return { rgba: rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), width, height };
 }
 
 function draw() {
-  const rgba = frameRgba();
-  if (!rgba || !ctx || !image) return;
-  image.data.set(rgba);
+  const f = frame();
+  if (!f || !ctx) return;
+  if (!image || image.width !== f.width || image.height !== f.height) {
+    ctx.canvas.width = f.width;
+    ctx.canvas.height = f.height;
+    image = new ImageData(f.width, f.height);
+  }
+  image.data.set(f.rgba);
   ctx.putImageData(image, 0, 0);
 }
 
@@ -74,7 +83,7 @@ function run(n: number, hold?: Buttons) {
 }
 
 function stats() {
-  const rgba = frameRgba()!;
+  const { rgba } = frame()!;
   const seen = new Set<number>();
   let h = 2166136261;
   for (let i = 0; i < rgba.length; i += 4) {
@@ -86,15 +95,15 @@ function stats() {
 }
 
 async function png(scale: number): Promise<string> {
-  const rgba = frameRgba()!;
-  const one = new OffscreenCanvas(W, H);
-  one.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(rgba), W, H), 0, 0);
+  const { rgba, width, height } = frame()!;
+  const one = new OffscreenCanvas(width, height);
+  one.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
   let target = one;
   if (scale !== 1) {
-    target = new OffscreenCanvas(W * scale, H * scale);
+    target = new OffscreenCanvas(width * scale, height * scale);
     const c = target.getContext("2d")!;
     c.imageSmoothingEnabled = false;
-    c.drawImage(one, 0, 0, W * scale, H * scale);
+    c.drawImage(one, 0, 0, width * scale, height * scale);
   }
   const bytes = new Uint8Array(await (await target.convertToBlob({ type: "image/png" })).arrayBuffer());
   let s = "";
@@ -147,9 +156,11 @@ async function probe(): Promise<ProbeResult> {
 async function handle(req: EmulatorRequest): Promise<unknown> {
   switch (req.type) {
     case "load": {
-      const h = await ensureHost();
-      if (loaded) h.unloadMedia();
+      if (!isPlatform(req.platform)) throw new Error(`unknown platform ${req.platform}`);
+      const h = await hostFor(CORES[req.platform]);
+      if (loaded) host!.unloadMedia(); // the previous ROM, on this core or another
       loaded = false;
+      host = h;
       await h.loadMedia({ platform: req.platform, bytes: req.rom, name: `game.${req.platform}` });
       loaded = true;
       if (req.sram?.length) {
@@ -165,7 +176,8 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
       run(1);
       drainAudio(false);
       draw();
-      return undefined;
+      const f = frame();
+      return { width: f?.width ?? h.status.fbWidth, height: f?.height ?? h.status.fbHeight, fps: h.status.coreFps } satisfies LoadResult;
     }
     case "reset":
       if (loaded) {
@@ -187,8 +199,8 @@ scope.onmessage = async (e: MessageEvent<EmulatorRequest>) => {
   const req = e.data;
   if (req.type === "init") {
     ctx = req.canvas.getContext("2d");
-    image = new ImageData(W, H);
-    await ensureHost().catch(() => null);
+    // the page may name the platform it will play, so its core downloads while the ROM does
+    if (isPlatform(req.platform)) await hostFor(CORES[req.platform]).catch(() => null);
     post({ type: "ready" });
     return;
   }
