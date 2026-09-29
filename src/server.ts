@@ -1,5 +1,5 @@
 // Headless build + run service: the same toolchain and gambatte core as the workers, behind HTTP, for a server that
-// makes games for someone (8bit club's MCP endpoint runs it in a container). Stateless: every request carries its
+// makes games for someone (chiptoy's MCP endpoint runs it in a container). Stateless: every request carries its
 // sources or ROM. Requests are served one at a time.
 //
 //   node dist/server.mjs            PORT (default 8080); GAMELAB_KEY, when set, must match the x-gamelab-key header
