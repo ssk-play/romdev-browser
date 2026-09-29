@@ -83,7 +83,7 @@ GPL-2.0-only. See LICENSE and NOTICE.md for bundled components and their sources
 
 ## Headless service (`dist/server.mjs`)
 
-The same toolchain and gambatte core behind HTTP, for a server that builds and runs games for someone (8bit club runs
+The same toolchain and gambatte core behind HTTP, for a server that builds and runs games for someone (chiptoy runs
 it in a container for its MCP endpoint). Stateless; requests are served one at a time.
 
 ```
