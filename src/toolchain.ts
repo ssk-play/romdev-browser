@@ -217,17 +217,18 @@ export class Toolchain {
     if (Object.keys(objects).length === 0) {
       return done({ ok: false, stage: "compile", rom: null, romBytesUsed: 0, issues: [{ file: "main.c", line: null, severity: "error", message: "no .c source" }], log });
     }
-    // Switchable ROM banks: what a source places in area _CODE_<n> (n >= 2: `#pragma constseg CODE_2`, sdcc adds the underscore) is linked
-    // at bank n's window ($4000) and written at n x 16 KB; the cart becomes MBC5. Code that switches banks must sit in
-    // the first 16 KB, so the runtime is linked right after crt0 and sources keep the order they come in.
+    // Switchable ROM banks: what a source places in area _CODE_<n> (n = 2-511: `#pragma constseg CODE_2` for data,
+    // `#pragma codeseg CODE_2` for `__banked` code, called through crt0's ___sdcc_bcall_ehl; sdcc adds the underscore)
+    // is linked at bank n's window ($4000) and written at n x 16 KB; the cart becomes MBC5. Code that switches banks
+    // must sit in the first 16 KB, so the runtime is linked right after crt0 and sources keep the order they come in.
     const banks = new Set<number>();
     for (const [name, rel] of Object.entries(objects))
       for (const m of rel.matchAll(/^A _CODE_(\d+) size ([0-9A-Fa-f]+)/gm)) {
         if (!parseInt(m[2], 16)) continue;
         const bank = Number(m[1]);
-        if (bank < 2 || bank > 255) {
-          // sdld addresses are 24-bit: bank n links at n<<16 | $4000, so 256 and up would wrap onto 0-255
-          const message = bank < 2 ? `bank ${bank}: switchable banks start at 2 (banks 0 and 1 are the fixed 32 KB)` : `bank ${bank}: the last bank is 255 (4 MB)`;
+        if (bank < 2 || bank > 511) {
+          // MBC5 has 512 banks; romdev's sdasgb links with 32-bit addresses, so all of them link at n<<16 | $4000
+          const message = bank < 2 ? `bank ${bank}: switchable banks start at 2 (banks 0 and 1 are the fixed 32 KB)` : `bank ${bank}: MBC5 has banks up to 511 (8 MB)`;
           return done({ ok: false, stage: "link", rom: null, romBytesUsed: 0, issues: [{ file: name.replace(/\.rel$/, ".c"), line: null, severity: "error", message }], log: log + message + "\n" });
         }
         banks.add(bank);
