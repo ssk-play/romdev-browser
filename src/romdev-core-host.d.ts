@@ -2,7 +2,7 @@ declare module "romdev-core-host" {
   export class LibretroHost {
     constructor(opts?: Record<string, unknown>);
     state: { audioRing: Int16Array[] } & Record<string, unknown>;
-    status: { audioSampleRate: number } & Record<string, unknown>;
+    status: { audioSampleRate: number; fbWidth: number; fbHeight: number; coreFps: number } & Record<string, unknown>;
     loadCore(opts: { factory: unknown; wasmBinary: Uint8Array; io?: false }): Promise<void>;
     loadMedia(args: { platform: string; bytes: Uint8Array; name?: string }): Promise<void>;
     unloadMedia(): void;

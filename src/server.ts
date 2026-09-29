@@ -1,4 +1,4 @@
-// Headless build + run service: the same toolchain and gambatte core as the workers, behind HTTP, for a server that
+// Headless build + run service: the same toolchains and cores as the workers, behind HTTP, for a server that
 // makes games for someone (chiptoy's MCP endpoint runs it in a container). Stateless: every request carries its
 // sources or ROM. Requests are served one at a time.
 //
@@ -17,6 +17,7 @@ import { crc32, deflateSync } from "node:zlib";
 import { LibretroHost } from "romdev-core-host";
 import { Toolchain, type ToolLoader, type ToolName, type EmscriptenFactory } from "./toolchain.ts";
 import { RUNTIME } from "./runtime.ts";
+import { CORES, isPlatform, PLATFORMS, type Core } from "./platforms.ts";
 import type { Buttons, Platform } from "./protocol.ts";
 
 declare const __VERSION__: string;
@@ -48,17 +49,22 @@ const loader: ToolLoader = {
 const toolchain = new Toolchain(loader);
 
 // ── emulator ──────────────────────────────────────────────────────────────────────────────────────────────────
-let hostReady: Promise<LibretroHost> | null = null;
-function emulator() {
-  hostReady ??= (async () => {
-    const factory = (await import(asset("gambatte.mjs").href)).default;
-    const h = new LibretroHost();
-    await h.loadCore({ factory, wasmBinary: new Uint8Array(readFileSync(asset("gambatte.wasm"))), io: false });
-    return h;
-  })();
-  return hostReady;
+const hosts = new Map<Core, Promise<LibretroHost>>();
+function emulator(core: Core) {
+  let ready = hosts.get(core);
+  if (!ready) {
+    ready = (async () => {
+      const factory = (await import(asset(`${core}.mjs`).href)).default;
+      const h = new LibretroHost();
+      await h.loadCore({ factory, wasmBinary: new Uint8Array(readFileSync(asset(`${core}.wasm`))), io: false });
+      return h;
+    })();
+    hosts.set(core, ready);
+  }
+  return ready;
 }
-let loaded = false;
+let current: LibretroHost | null = null; // the core holding the last ROM
+const platformError = () => new Error(`platform: ${PLATFORMS.join(" or ")}`);
 
 function png(rgba: Uint8Array | Uint8ClampedArray, width: number, height: number): Buffer {
   const raw = Buffer.alloc((width * 3 + 1) * height);
@@ -96,16 +102,18 @@ function buttonsAt(input: InputEntry[], f: number): Buttons {
 
 async function run(req: RunRequest) {
   const t0 = Date.now();
-  const host = await emulator();
+  if (!isPlatform(req.platform)) throw platformError();
+  const host = await emulator(CORES[req.platform]);
   const frames = Math.max(1, Math.min(MAX_FRAMES, Math.floor(req.frames ?? 300)));
   const input = (req.input ?? []).filter((e) => e && Array.isArray(e.buttons) && e.buttons.every((b) => (BUTTONS as readonly string[]).includes(b)));
   const shots = [...new Set((req.shots ?? []).map(Math.floor).filter((s) => s > 0 && s <= frames))].sort((a, b) => a - b).slice(0, 8);
   const every = Math.max(0, Math.floor(req.every ?? 0));
   const stops = new Set<number>([...shots, frames]);
   if (every) for (let f = every; f < frames && stops.size < 64; f += every) stops.add(f);
-  if (loaded) host.unloadMedia();
+  current?.unloadMedia();
+  current = null;
   await host.loadMedia({ platform: req.platform, bytes: new Uint8Array(Buffer.from(req.rom, "base64")), name: `game.${req.platform}` });
-  loaded = true;
+  current = host;
   const rows: { frame: number; memory: string[] }[] = [];
   const pics: { frame: number; png: string }[] = [];
   let cur = 0;
@@ -133,7 +141,7 @@ async function run(req: RunRequest) {
 }
 
 async function build(req: { platform: Platform; sources: Record<string, string>; title?: string }) {
-  if (req.platform !== "gb" && req.platform !== "gbc") throw new Error("platform: gb or gbc");
+  if (!isPlatform(req.platform)) throw platformError();
   if (!req.sources || typeof req.sources["main.c"] !== "string") throw new Error("sources must include main.c");
   const r = await toolchain.build({ platform: req.platform, sources: req.sources, title: req.title }, RUNTIME[req.platform]);
   return { ok: r.ok, stage: r.stage, rom: r.rom ? Buffer.from(r.rom).toString("base64") : null, romBytesUsed: r.romBytesUsed,

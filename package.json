@@ -1,6 +1,6 @@
 {
   "name": "romdev-browser",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run romdev's Game Boy / Game Boy Color toolchain (SDCC sm83) and emulator (gambatte) in the browser, inside Web Workers with a postMessage protocol.",
   "license": "GPL-2.0-only",
   "type": "module",
