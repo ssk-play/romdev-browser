@@ -1,6 +1,6 @@
 {
   "name": "romdev-browser",
-  "version": "0.7.0",
+  "version": "0.11.0",
   "description": "Run romdev's toolchains (SDCC for Game Boy / Game Boy Color, cc65 for NES) and emulator cores (gambatte, fceumm) in the browser, inside Web Workers with a postMessage protocol, and headless over HTTP.",
   "license": "GPL-2.0-only",
   "type": "module",
@@ -36,6 +36,7 @@
   },
   "devDependencies": {
     "esbuild": "0.28.2",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "ws": "8.21.0"
   }
 }

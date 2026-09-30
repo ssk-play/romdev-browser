@@ -111,3 +111,58 @@ POST /run   { platform, rom, frames, input: [{ frame, until, buttons, touch?, to
             -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png }], sram, ms }
 ```
 
+
+### Network input (0.8.0)
+
+`{type:"advance", id, frames:1..8, masks:[p1,p2]}` advances exactly the requested frames and replies with
+`{hash}` (FNV-1a of system RAM and save RAM, for comparing matching frame checkpoints). No autonomous clock.
+The mask bits from low to high are Right, Left, Up, Down, A, B, Select, Start. Both controller ports are set
+(NES uses its two hardware ports). Network batches clear touch helpers and do not use link-cable emulation.
+Single-player `step` is unchanged.
+
+### Local rollback (0.9.0)
+
+`{type:"networkBegin", id}` stores the loaded ROM's complete libretro state and replies with `{stateBytes}`.
+`{type:"networkStep", id, frame, masks:[p1,p2], confirmed}` executes one frame, stores its full state, draws,
+and emits forward audio. `frame` starts at zero; `confirmed` is the last canonical input frame, initially -1.
+`{type:"networkReplay", id, from, inputs:[[p1,p2],...], confirmed}` restores the snapshot **before** `from`,
+resimulates through the current frame, and draws the corrected final image. All replay audio is discarded.
+Both step and replay reply with `[{seq,hash},...]` for frame 59, 119, etc. Hashes cover system and save RAM;
+the caller compares them only after those inputs are confirmed and all corrections complete.
+
+Snapshots remain inside the worker. Confirmed snapshots are pruned; an unconfirmed window above 64 frames
+is rejected. The caller owns prediction, input transport, pacing and a smaller prediction limit (chiptoy uses 24).
+Network requests clear touch helpers and set both native controller ports. Load/reset clears rollback history.
+Do not mix autonomous `step`, reset, or probe with an active network session. No core/toolchain patch is required.
+
+The optional `scripts/network-integration.mjs` harness boots independent fceumm instances and joins real
+Cloudflare rooms over MCP/WebSockets. Pass the client timeline module path, a local/dev origin, a shared NES game
+UUID, `pair` (two headless participants), an invitation UUID or `public` (join a waiting browser), added outbound
+and inbound delay in ms, and test duration in seconds. Dev needs its authorized `MCP_BEARER` in the environment;
+credentials and socket tickets are never printed. It checks canonical hashes, average frame rate and engine health,
+reports prediction/stall/rollback counters, and cleans up its rooms. Live jitter may exhaust the prediction budget;
+zero stalls are not asserted for an arbitrary Internet connection. The app never imports this harness or the core.
+
+### Optional NES cartridge network menu (0.11.0)
+
+ABI 1 remains supported: bytes `4E 58 01` at CPU $03E0, command at $03E3
+(`1` join, `2` create invitation, `3` leave), status at $03E4
+(`0` unavailable, `1` idle, `2` connecting, `3` waiting, `4` playing, `5` ended).
+ABI 2 advertises `4E 58 02`, adds status `6` error, command `4` enter code,
+count at $03E5 and six symbols at $03E6-$03EB (1=up, 2=down, 3=left, 4=right, 5=A, 6=B).
+The worker emits `{type:"networkAction", action:"join"|"invite"|"enter"|"leave", code?}`;
+entry requires six valid symbols, encoded as six UDLRAB characters. Local commands
+are consumed once. `{type:"networkStatus", id, status, code?}` sets status 1-6 and,
+when provided, writes the six-symbol invitation code for display in the cartridge.
+An omitted code preserves typed symbols, allowing retry after error. Consumers
+implement authentication, room matching, code validation and expiry outside this worker.
+
+Unadvertised cartridges and Game Boy platforms are untouched. Use a fresh zeroed-RAM
+ROM load after the local lobby and before `networkBegin`; lobby duration and local
+identifiers must never become match state. During both forward simulation and replay
+the worker writes identical playing status and clears ABI 2 local code bytes. Only a
+forward `networkStep` can emit leave; replay emits no actions and never acknowledges
+command RAM. Do not write local player ID, RTT, UID or connection data into hashed RAM.
+
+chiptoy's optional `network.h` wraps the mailbox and pad-code editing. Provide an
+offline path when status remains 0; in-game menus initiate join/create/enter/leave.
