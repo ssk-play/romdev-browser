@@ -134,3 +134,11 @@ Snapshots remain inside the worker. Confirmed snapshots are pruned; an unconfirm
 is rejected. The caller owns prediction, input transport, pacing and a smaller prediction limit (chiptoy uses 24).
 Network requests clear touch helpers and set both native controller ports. Load/reset clears rollback history.
 Do not mix autonomous `step`, reset, or probe with an active network session. No core/toolchain patch is required.
+
+The optional `scripts/network-integration.mjs` harness boots independent fceumm instances and joins real
+Cloudflare rooms over MCP/WebSockets. Pass the client timeline module path, a local/dev origin, a shared NES game
+UUID, `pair` (two headless participants), an invitation UUID or `public` (join a waiting browser), added outbound
+and inbound delay in ms, and test duration in seconds. Dev needs its authorized `MCP_BEARER` in the environment;
+credentials and socket tickets are never printed. It checks canonical hashes, average frame rate and engine health,
+reports prediction/stall/rollback counters, and cleans up its rooms. Live jitter may exhaust the prediction budget;
+zero stalls are not asserted for an arbitrary Internet connection. The app never imports this harness or the core.

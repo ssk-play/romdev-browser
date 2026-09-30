@@ -1,7 +1,7 @@
 // Integration harness in the separate emulator project. No GPL code is imported by the app.
 // Run from the app worktree with a dev-only MCP_BEARER in the environment:
 // node ../romdev-browser/scripts/network-integration.mjs ./src/runtime/rollback.ts https://dev.chiptoy.com <game UUID> pair 100 80 30
-// Replace "pair" with a waiting invitation room UUID to join a real browser. Added delays affect only the second peer.
+// Replace "pair" with a waiting invitation room UUID, or "public" for a browser in Online play. Added delays affect only the second peer.
 // A shared NES fixture is required; no persistent data is written and all joined rooms are cleaned up.
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
@@ -72,7 +72,7 @@ async function peer(join, delay){
  setTimeout(()=>{if(!started){failed='start timeout';stop(failed)}},30_000).unref();return p;
 }
 try{
- const first=await call('join_game',{mode:'invite',client:crypto.randomUUID(),...(room&&room!=='pair'?{room}:{})});joins.push(first);
+ const first=await call('join_game',{mode:room==='public'?'public':'invite',client:crypto.randomUUID(),...(room&&room!=='pair'&&room!=='public'?{room}:{})});joins.push(first);
  if(room==='pair'){
   const second=await call('join_game',{mode:'invite',room:first.room,client:crypto.randomUUID()});joins.push(second);
   await Promise.all([peer(first,false),peer(second,true)]);
