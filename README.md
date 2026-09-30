@@ -142,3 +142,25 @@ and inbound delay in ms, and test duration in seconds. Dev needs its authorized 
 credentials and socket tickets are never printed. It checks canonical hashes, average frame rate and engine health,
 reports prediction/stall/rollback counters, and cleans up its rooms. Live jitter may exhaust the prediction budget;
 zero stalls are not asserted for an arbitrary Internet connection. The app never imports this harness or the core.
+
+### Optional NES cartridge network menu (0.10.0)
+
+A cartridge may advertise an ABI 1 mailbox at CPU $03E0: bytes `4E 58 01`,
+command byte at $03E3 (`1` join, `2` invite, `3` leave), status at $03E4
+(`0` unavailable, `1` idle, `2` connecting, `3` waiting, `4` playing, `5` ended).
+Consumers implement authentication, matching, invitations and URL sharing outside
+this GPL worker. The worker emits `{type:"networkAction", action:"join"|"invite"|"leave"}`
+when a local cartridge submits a command, consuming the local command once.
+`{type:"networkStatus", id, status}` sets a pre-match lobby status (1-5); it is
+rejected while rollback is active. Unadvertised cartridges and Game Boy platforms
+are untouched. Use a fresh zeroed-RAM ROM load after the local lobby and before
+`networkBegin`; lobby duration and local identifiers must never become match state.
+During both forward simulation and replay the worker writes the same playing
+status to every advertised cartridge. Only a forward `networkStep` can emit leave;
+replay emits no browser actions and never acknowledges command RAM. Do not write
+local player ID, RTT, UID or connection-specific data into hashed cartridge RAM.
+
+chiptoy's optional `network.h` wraps this mailbox as `net_init()`, `net_status()`,
+`net_join()`, `net_invite()`, `net_leave()`. This is a browser capability: provide an
+offline path when status stays 0, and expose invite sharing through a browser
+button so a fresh user gesture can open the native share sheet.
