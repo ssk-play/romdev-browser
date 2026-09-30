@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import WebSocket from 'ws';
 import { LibretroHost } from 'romdev-core-host';
+import { NetworkBridge } from '../src/network-bridge.ts';
 import { RollbackCore } from '../src/rollback.ts';
 import { writeTouches } from '../src/platforms.ts';
 const browser=resolve(import.meta.dirname,'..');
@@ -33,7 +34,8 @@ async function peer(join, delay){
  const host=new LibretroHost();await host.loadCore({factory,wasmBinary:wasm,io:false});await host.loadMedia({platform:'nes',bytes:rom,name:'duel.nes'});
  host.writeMemory('save_ram',0,new Uint8Array(8192));host.reset();host.stepFrames(1);host.state.audioRing.length=0;
  const names=['right','left','up','down','a','b','select','start'];
- const core={save:()=>host.serializeState(),restore:s=>host.unserializeState(s),frame:m=>{host.setInput({ports:m.map(mask=>Object.fromEntries(names.map((b,i)=>[b,!!(mask&(1<<i))])))});writeTouches(host,'nes',[]);host.stepFrames(1)},hash:()=>{let h=2166136261;for(const r of ['system_ram','save_ram'])for(const b of host.readMemory(r,0,host.regionSize(r)))h=Math.imul(h^b,16777619);return h>>>0},discardAudio:()=>{host.state.audioRing.length=0}};
+ const bridge = new NetworkBridge();
+ const core={save:()=>host.serializeState(),restore:s=>host.unserializeState(s),frame:m=>{host.setInput({ports:m.map(mask=>Object.fromEntries(names.map((b,i)=>[b,!!(mask&(1<<i))])))});bridge.write(host,'nes',true);writeTouches(host,'nes',[]);host.stepFrames(1)},hash:()=>{let h=2166136261;for(const r of ['system_ram','save_ram'])for(const b of host.readMemory(r,0,host.regionSize(r)))h=Math.imul(h^b,16777619);return h>>>0},discardAudio:()=>{host.state.audioRing.length=0}};
  const rollback=new RollbackCore(core),timeline=new RollbackTimeline(join.slot,{step:async(...a)=>{const c=rollback.step(...a);core.discardAudio();return c},replay:async(...a)=>rollback.replay(...a)});
  const ws=new WebSocket(origin.replace(/^http/,'ws')+'/api/network/'+game+'/socket?ticket='+join.ticket,{headers:{origin}});sockets.push(ws);
  let stopped=false,started=false,nextDue=0,busy=false,stalls=0,starving=false,maxPrediction=0,checks=0,frameWork=0,began=0,timer,finish; const sentAt=new Map(), rtts=[], ages=[];

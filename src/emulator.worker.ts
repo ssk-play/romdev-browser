@@ -2,6 +2,7 @@
 // The platform's libretro core (see platforms.ts) driven by romdev-core-host in bytes-only mode, drawing to an
 // OffscreenCanvas handed over by the page; the canvas takes the core's screen size when a ROM loads. Frame pacing and
 // input timing belong to the page: it sends {type:"step", frames, buttons} from its animation loop at the core's fps.
+import { NetworkBridge } from "./network-bridge.ts";
 import { RollbackCore } from "./rollback.ts";
 import { LibretroHost } from "romdev-core-host";
 import { CORES, isPlatform, writeTouches, type Core } from "./platforms.ts";
@@ -18,6 +19,7 @@ let image: ImageData | null = null;
 let loaded = false;
 let platform: Platform = "gbc";   // of the loaded ROM
 let rollback: RollbackCore | null = null;
+const bridge = new NetworkBridge();
 let busy = 0; // requests in flight (probe awaits PNG encoding); steps are dropped meanwhile
 
 function hostFor(core: Core) {
@@ -159,6 +161,7 @@ async function probe(): Promise<ProbeResult> {
 function networkFrame(masks: number[]) {
   const names = ["right", "left", "up", "down", "a", "b", "select", "start"] as const;
   host!.setInput({ ports: masks.map(mask => Object.fromEntries(names.map((name, i) => [name, !!(mask & (1 << i))]))) });
+  bridge.write(host!, platform, true);
   writeTouches(host!, platform, []); host!.stepFrames(1);
 }
 function memoryHash() {
@@ -174,7 +177,7 @@ function memoryHash() {
 async function handle(req: EmulatorRequest): Promise<unknown> {
   switch (req.type) {
     case "load": {
-      rollback = null;
+      rollback = null; bridge.reset();
       if (!isPlatform(req.platform)) throw new Error(`unknown platform ${req.platform}`);
       const h = await hostFor(CORES[req.platform]);
       if (loaded) host!.unloadMedia(); // the previous ROM, on this core or another
@@ -200,7 +203,7 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
       return { width: f?.width ?? h.status.fbWidth, height: f?.height ?? h.status.fbHeight, fps: h.status.coreFps } satisfies LoadResult;
     }
     case "reset":
-      rollback = null;
+      rollback = null; bridge.reset();
       if (loaded) {
         host!.reset();
         drainAudio(false);
@@ -209,6 +212,11 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
     case "probe":
       if (!loaded) throw new Error("no ROM loaded");
       return probe();
+    case "networkStatus":
+      if (!Number.isInteger(req.status) || req.status < 1 || req.status > 5 || rollback) throw new Error("Invalid lobby status");
+      bridge.status = req.status;
+      if (loaded && host) bridge.write(host, platform);
+      return undefined;
     case "networkBegin":
       if (!loaded || !host) throw new Error("No ROM loaded");
       drainAudio(false);
@@ -218,6 +226,8 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
     case "networkStep": {
       if (!rollback) throw new Error("Start network first");
       const checks = rollback.step(req.frame, req.masks, req.confirmed);
+      const action = bridge.poll(host!, platform, true);
+      if (action) post({ type: "networkAction", action });
       draw(); drainAudio(true); return checks;
     }
     case "networkReplay": {
@@ -266,7 +276,12 @@ scope.onmessage = async (e: MessageEvent<EmulatorRequest>) => {
     if (!loaded || !host || busy) return;
     input(req.buttons);
     writeTouches(host, platform, req.touches);
-    host.stepFrames(Math.max(1, Math.min(req.frames, 8)));
+    for (let n = 0; n < Math.max(1, Math.min(req.frames, 8)); n++) {
+      bridge.write(host, platform);
+      host.stepFrames(1);
+      const action = bridge.poll(host, platform);
+      if (action) post({ type: "networkAction", action });
+    }
     draw();
     drainAudio(true);
     return;

@@ -41,12 +41,14 @@ export type EmulatorRequest =
   | { type: "reset"; id: number }
   | { type: "probe"; id: number }
   | { type: "readSram"; id: number }
+  | { type: "networkStatus"; id: number; status: number }
   | { type: "networkBegin"; id: number }
   | { type: "networkStep"; id: number; frame: number; masks: number[]; confirmed: number }
   | { type: "networkReplay"; id: number; from: number; inputs: number[][]; confirmed: number }
   | { type: "advance"; id: number; masks: number[]; frames: number };
 export type EmulatorEvent =
   | { type: "ready" }
+  | { type: "networkAction"; action: "join" | "invite" | "leave" }
   | { type: "audio"; pcm: Int16Array; rate: number }
   | { type: "reply"; id: number; ok: true; value?: unknown }
   | { type: "reply"; id: number; ok: false; error: string };
