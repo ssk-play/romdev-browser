@@ -16,27 +16,37 @@ function frames(n,buttons={},playing=false){
  for(let i=0;i<n;i++) {bridge.write(host,'nes',playing);host.stepFrames(1);const a=bridge.poll(host,'nes',playing);if(a)actions.push(a);host.state.audioRing.length=0}
 }
 function reset(){host.writeMemory('save_ram',0,new Uint8Array(8192));host.reset();host.stepFrames(1);bridge.reset();actions.length=0}
-reset();frames(90);frames(4,{a:true});frames(10);assert.deepEqual(actions,['join']);
 function tap(key){frames(4,{[key]:true});frames(12)}
+function state(offset){return host.readMemory('system_ram',0x300+offset,1)[0]}
 function friends(){reset();frames(90);tap('down');tap('a')}
-friends();tap('a');assert.deepEqual(actions,['invite']);
-bridge.status=3;bridge.code='UDLRAB';frames(180);assert.equal(host.readMemory('system_ram',0x307,1)[0],3);
-frames(4,{select:true});frames(5);assert.deepEqual(actions,['invite','leave']);
-friends();tap('down');tap('a');assert.equal(host.readMemory('system_ram',0x309,1)[0],2);
-for(const key of ['up','down','left','right','a','b'])tap(key);
-assert.equal(bridge.enteredCode(host),'UDLRAB');
-tap('select');assert.equal(host.readMemory('system_ram',0x30a,1)[0],5);tap('b');tap('start');
-assert.deepEqual(actions,['enter']);assert.equal(bridge.enteredCode(host),'UDLRAB');
-bridge.status=6;frames(90);tap('start');assert.deepEqual(actions,['enter','enter']);
-assert.equal(bridge.enteredCode(host),'UDLRAB');
-for(let i=0;i<7;i++)tap('select');assert.equal(host.readMemory('system_ram',0x309,1)[0],1);
+reset();frames(90);frames(120,{a:true});assert.deepEqual(actions,[]);
+frames(12);assert.deepEqual(actions,['join']);frames(120);assert.deepEqual(actions,['join']);
+reset();frames(90);tap('down');frames(120,{a:true});assert.equal(state(9),0);
+frames(12);assert.equal(state(9),1);assert.deepEqual(actions,[]);
+frames(120,{a:true});assert.deepEqual(actions,[]);frames(12);assert.deepEqual(actions,['invite']);
+bridge.status=3;bridge.code='UDLRUD';frames(180);assert.equal(state(7),3);
+frames(120,{select:true});assert.deepEqual(actions,['invite']);frames(12);assert.deepEqual(actions,['invite','leave']);
+friends();tap('down');tap('a');assert.equal(state(9),2);assert.equal(state(10),0);
+tap('a');tap('b');assert.equal(state(10),0);assert.deepEqual(actions,[]);
+for(const key of ['up','down','left','right','up'])tap(key);
+assert.equal(state(10),5);assert.deepEqual(actions,[]);
+frames(120,{down:true});assert.equal(state(10),5);assert.deepEqual(actions,[]);
+frames(12);assert.equal(bridge.enteredCode(host),'UDLRUD');assert.deepEqual(actions,['enter']);
+frames(120);assert.deepEqual(actions,['enter']);
+bridge.status=6;frames(90);tap('select');assert.equal(state(10),5);tap('down');
+assert.deepEqual(actions,['enter','enter']);assert.equal(bridge.enteredCode(host),'UDLRUD');
+for(let i=0;i<7;i++)tap('select');assert.equal(state(9),1);
 assert.deepEqual([...host.readMemory('system_ram',0x3fe,2)],[0,0]);
-reset();frames(90,{},true);assert.equal(host.readMemory('system_ram',0x307,1)[0],4);
-frames(4,{select:true},true);frames(10,{},true);assert.deepEqual(actions,['leave']);
+// A menu action still works while another button stays held: no all-buttons release gate.
+reset();frames(90);tap('down');frames(4,{right:true,a:true});frames(90,{right:true});
+assert.equal(state(9),1);assert.deepEqual(actions,[]);frames(4,{right:true,a:true});frames(90,{right:true});
+assert.deepEqual(actions,['invite']);
+reset();frames(90,{},true);assert.equal(state(7),4);
+frames(120,{select:true},true);assert.deepEqual(actions,[]);frames(12,{},true);assert.deepEqual(actions,['leave']);
 assert.deepEqual([...host.readMemory('system_ram',0x3fe,2)],[0,0]);
-// Real hardware / headless consumers without a bridge still enter offline practice.
-reset();host.setInput({ports:[{},{}]});host.stepFrames(90);assert.equal(host.readMemory('system_ram',0x307,1)[0],0);
-host.setInput({ports:[{start:true},{}]});host.stepFrames(5);host.setInput({ports:[{right:true},{}]});host.stepFrames(100);
-assert.ok(host.readMemory('system_ram',0x300,1)[0]>40);
+// Offline menus also wait for Start release; movement remains held afterward.
+reset();host.setInput({ports:[{},{}]});host.stepFrames(90);assert.equal(state(7),0);
+host.setInput({ports:[{start:true},{}]});host.stepFrames(120);assert.equal(state(0),0);
+host.setInput({ports:[{right:true},{}]});host.stepFrames(100);assert.ok(state(0)>40);
 assert.deepEqual([...host.readMemory('system_ram',0x3fe,2)],[0,0]);
-console.log('PASS cartridge Online play / Play with friends / Create room / Enter code, six symbols, delete, retry, waiting status, leave in lobby and match, and offline practice with zero engine overruns/drops');
+console.log('PASS menu actions on release only, held A cannot skip friends/create, held direction survives menu actions, six directional symbols auto-submit once, A/B ignored, delete/retry, release to leave and offline gameplay with zero engine overruns/drops');
