@@ -213,8 +213,10 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
       if (!loaded) throw new Error("no ROM loaded");
       return probe();
     case "networkStatus":
-      if (!Number.isInteger(req.status) || req.status < 1 || req.status > 5 || rollback) throw new Error("Invalid lobby status");
+      if (!Number.isInteger(req.status) || req.status < 1 || req.status > 6 || rollback) throw new Error("Invalid lobby status");
+      if (req.code !== undefined && !/^[UDLRAB]{6}$/.test(req.code)) throw new Error("Invalid invitation code");
       bridge.status = req.status;
+      bridge.code = req.code;
       if (loaded && host) bridge.write(host, platform);
       return undefined;
     case "networkBegin":
@@ -227,7 +229,7 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
       if (!rollback) throw new Error("Start network first");
       const checks = rollback.step(req.frame, req.masks, req.confirmed);
       const action = bridge.poll(host!, platform, true);
-      if (action) post({ type: "networkAction", action });
+      if (action) post({ type: "networkAction", action, ...(action === "enter" ? { code: bridge.enteredCode(host!) } : {}) });
       draw(); drainAudio(true); return checks;
     }
     case "networkReplay": {
@@ -280,7 +282,7 @@ scope.onmessage = async (e: MessageEvent<EmulatorRequest>) => {
       bridge.write(host, platform);
       host.stepFrames(1);
       const action = bridge.poll(host, platform);
-      if (action) post({ type: "networkAction", action });
+      if (action) post({ type: "networkAction", action, ...(action === "enter" ? { code: bridge.enteredCode(host!) } : {}) });
     }
     draw();
     drainAudio(true);

@@ -143,24 +143,26 @@ credentials and socket tickets are never printed. It checks canonical hashes, av
 reports prediction/stall/rollback counters, and cleans up its rooms. Live jitter may exhaust the prediction budget;
 zero stalls are not asserted for an arbitrary Internet connection. The app never imports this harness or the core.
 
-### Optional NES cartridge network menu (0.10.0)
+### Optional NES cartridge network menu (0.11.0)
 
-A cartridge may advertise an ABI 1 mailbox at CPU $03E0: bytes `4E 58 01`,
-command byte at $03E3 (`1` join, `2` invite, `3` leave), status at $03E4
+ABI 1 remains supported: bytes `4E 58 01` at CPU $03E0, command at $03E3
+(`1` join, `2` create invitation, `3` leave), status at $03E4
 (`0` unavailable, `1` idle, `2` connecting, `3` waiting, `4` playing, `5` ended).
-Consumers implement authentication, matching, invitations and URL sharing outside
-this GPL worker. The worker emits `{type:"networkAction", action:"join"|"invite"|"leave"}`
-when a local cartridge submits a command, consuming the local command once.
-`{type:"networkStatus", id, status}` sets a pre-match lobby status (1-5); it is
-rejected while rollback is active. Unadvertised cartridges and Game Boy platforms
-are untouched. Use a fresh zeroed-RAM ROM load after the local lobby and before
-`networkBegin`; lobby duration and local identifiers must never become match state.
-During both forward simulation and replay the worker writes the same playing
-status to every advertised cartridge. Only a forward `networkStep` can emit leave;
-replay emits no browser actions and never acknowledges command RAM. Do not write
-local player ID, RTT, UID or connection-specific data into hashed cartridge RAM.
+ABI 2 advertises `4E 58 02`, adds status `6` error, command `4` enter code,
+count at $03E5 and six symbols at $03E6-$03EB (1=up, 2=down, 3=left, 4=right, 5=A, 6=B).
+The worker emits `{type:"networkAction", action:"join"|"invite"|"enter"|"leave", code?}`;
+entry requires six valid symbols, encoded as six UDLRAB characters. Local commands
+are consumed once. `{type:"networkStatus", id, status, code?}` sets status 1-6 and,
+when provided, writes the six-symbol invitation code for display in the cartridge.
+An omitted code preserves typed symbols, allowing retry after error. Consumers
+implement authentication, room matching, code validation and expiry outside this worker.
 
-chiptoy's optional `network.h` wraps this mailbox as `net_init()`, `net_status()`,
-`net_join()`, `net_invite()`, `net_leave()`. This is a browser capability: provide an
-offline path when status stays 0, and expose invite sharing through a browser
-button so a fresh user gesture can open the native share sheet.
+Unadvertised cartridges and Game Boy platforms are untouched. Use a fresh zeroed-RAM
+ROM load after the local lobby and before `networkBegin`; lobby duration and local
+identifiers must never become match state. During both forward simulation and replay
+the worker writes identical playing status and clears ABI 2 local code bytes. Only a
+forward `networkStep` can emit leave; replay emits no actions and never acknowledges
+command RAM. Do not write local player ID, RTT, UID or connection data into hashed RAM.
+
+chiptoy's optional `network.h` wraps the mailbox and pad-code editing. Provide an
+offline path when status remains 0; in-game menus initiate join/create/enter/leave.

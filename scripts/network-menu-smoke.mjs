@@ -18,9 +18,20 @@ function frames(n,buttons={},playing=false){
 }
 function reset(){host.writeMemory('save_ram',0,new Uint8Array(8192));host.reset();host.stepFrames(1);bridge.reset();actions.length=0}
 reset();frames(90);frames(4,{a:true});frames(10);assert.deepEqual(actions,['join']);
-reset();frames(90);frames(4,{down:true});frames(4);frames(4,{a:true});frames(10);assert.deepEqual(actions,['invite']);
-bridge.status=3;frames(180);assert.equal(host.readMemory('system_ram',0x307,1)[0],3);
+function tap(key){frames(8,{[key]:true});frames(30)}
+function friends(){reset();frames(90);tap('down');tap('a')}
+friends();tap('a');assert.deepEqual(actions,['invite']);
+bridge.status=3;bridge.code='UDLRAB';frames(180);assert.equal(host.readMemory('system_ram',0x307,1)[0],3);
 frames(4,{select:true});frames(5);assert.deepEqual(actions,['invite','leave']);
+friends();tap('down');tap('a');assert.equal(host.readMemory('system_ram',0x309,1)[0],2);
+for(const key of ['up','down','left','right','a','b'])tap(key);
+assert.equal(bridge.enteredCode(host),'UDLRAB');
+tap('select');assert.equal(host.readMemory('system_ram',0x30a,1)[0],5);tap('b');tap('start');
+assert.deepEqual(actions,['enter']);assert.equal(bridge.enteredCode(host),'UDLRAB');
+bridge.status=6;frames(90);tap('start');assert.deepEqual(actions,['enter','enter']);
+assert.equal(bridge.enteredCode(host),'UDLRAB');
+for(let i=0;i<7;i++)tap('select');assert.equal(host.readMemory('system_ram',0x309,1)[0],1);
+assert.deepEqual([...host.readMemory('system_ram',0x3fe,2)],[0,0]);
 reset();frames(90,{},true);assert.equal(host.readMemory('system_ram',0x307,1)[0],4);
 frames(4,{select:true},true);frames(10,{},true);assert.deepEqual(actions,['leave']);
 assert.deepEqual([...host.readMemory('system_ram',0x3fe,2)],[0,0]);
@@ -29,4 +40,4 @@ reset();host.setInput({ports:[{},{}]});host.stepFrames(90);assert.equal(host.rea
 host.setInput({ports:[{start:true},{}]});host.stepFrames(5);host.setInput({ports:[{right:true},{}]});host.stepFrames(100);
 assert.ok(host.readMemory('system_ram',0x300,1)[0]>40);
 assert.deepEqual([...host.readMemory('system_ram',0x3fe,2)],[0,0]);
-console.log('PASS cartridge Online play / Invite friends, waiting status, leave in lobby and match, and offline practice with zero engine overruns/drops');
+console.log('PASS cartridge Online play / Play with friends / Create room / Enter code, six symbols, delete, retry, waiting status, leave in lobby and match, and offline practice with zero engine overruns/drops');

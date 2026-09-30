@@ -23,3 +23,18 @@ test('match status is identical despite local lobby status; leave never mutates 
   assert.equal(bridge.poll(host,'nes',true),'leave'); assert.deepEqual(ram,before);
   assert.equal(bridge.poll(host,'nes',true),null); bridge.reset(); assert.equal(bridge.poll(host,'nes',true),'leave');
 });
+test('ABI 2 publishes six pad symbols and emits validated entry; synchronized RAM excludes local codes', () => {
+  const { ram, host, bridge } = fixture(); ram[at+2]=2;
+  bridge.status=3;bridge.code='UDLRAB';bridge.write(host,'nes');
+  assert.deepEqual([...ram.slice(at+4,at+12)],[3,6,1,2,3,4,5,6]);
+  ram[at+3]=4;assert.equal(bridge.poll(host,'nes'),'enter');assert.equal(bridge.enteredCode(host),'UDLRAB');
+  bridge.code=undefined;bridge.status=6;bridge.write(host,'nes');assert.equal(bridge.enteredCode(host),'UDLRAB');
+  ram[at+5]=5;ram[at+3]=4;assert.equal(bridge.poll(host,'nes'),null);
+  ram[at+5]=6;ram[at+11]=7;assert.equal(bridge.poll(host,'nes'),null);
+  bridge.write(host,'nes',true);assert.deepEqual([...ram.slice(at+4,at+12)],[4,0,0,0,0,0,0,0]);
+});
+test('ABI 1 never receives code bytes and cannot request entry', () => {
+  const { ram, host, bridge } = fixture();ram.fill(99,at+5,at+12);bridge.code='UDLRAB';bridge.write(host,'nes');
+  assert.deepEqual([...ram.slice(at+5,at+12)],Array(7).fill(99));
+  ram[at+3]=4;assert.equal(bridge.poll(host,'nes'),null);
+});
