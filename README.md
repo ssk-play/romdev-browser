@@ -131,6 +131,6 @@ Both step and replay reply with `[{seq,hash},...]` for frame 59, 119, etc. Hashe
 the caller compares them only after those inputs are confirmed and all corrections complete.
 
 Snapshots remain inside the worker. Confirmed snapshots are pruned; an unconfirmed window above 64 frames
-is rejected. The caller owns prediction, input transport, pacing and a smaller prediction limit (chiptoy uses 18).
+is rejected. The caller owns prediction, input transport, pacing and a smaller prediction limit (chiptoy uses 24).
 Network requests clear touch helpers and set both native controller ports. Load/reset clears rollback history.
 Do not mix autonomous `step`, reset, or probe with an active network session. No core/toolchain patch is required.
