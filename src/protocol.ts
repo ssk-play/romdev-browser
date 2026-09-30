@@ -4,10 +4,11 @@ import type { BuildInput, BuildResult } from "./toolchain.ts";
 
 export type Platform = "gb" | "gbc" | "nes";
 export type Buttons = Partial<Record<"up" | "down" | "left" | "right" | "a" | "b" | "start" | "select", boolean>>;
-/** A finger on the game screen, in the screen's pixels (null: none). Only a game that asks for touch gets it: its
- *  engine writes TOUCH_MAGIC at the start of the platform's touch block (TOUCH_BLOCK, platforms.ts), and the worker then
- *  keeps the next three bytes as [down 0/1, x, y] before every frame. Real hardware has no touch. */
-export type Touch = { x: number; y: number } | null;
+/** Fingers on the game screen, in the screen's pixels: slot i is the same finger from the moment it lands until it lifts
+ *  (null: no finger in that slot). Only a game that asks for touch gets them: its engine writes a header (TOUCH_HEADER,
+ *  platforms.ts) naming its finger buffer and how many fingers it takes. Real hardware has no touch. */
+export type TouchPoint = { x: number; y: number };
+export type Touches = (TouchPoint | null)[];
 
 // ── compiler.worker.js ──
 /** `warmup` downloads the platform's toolchain early (gbc when none is named). */
@@ -36,7 +37,7 @@ export interface LoadResult {
 export type EmulatorRequest =
   | { type: "init"; canvas: OffscreenCanvas; platform?: Platform }
   | { type: "load"; id: number; rom: Uint8Array; platform: Platform; sram?: Uint8Array | null }
-  | { type: "step"; frames: number; buttons: Buttons; touch?: Touch }
+  | { type: "step"; frames: number; buttons: Buttons; touches?: Touches }
   | { type: "reset"; id: number }
   | { type: "probe"; id: number }
   | { type: "readSram"; id: number }

@@ -3,7 +3,7 @@
 // OffscreenCanvas handed over by the page; the canvas takes the core's screen size when a ROM loads. Frame pacing and
 // input timing belong to the page: it sends {type:"step", frames, buttons} from its animation loop at the core's fps.
 import { LibretroHost } from "romdev-core-host";
-import { CORES, isPlatform, writeTouch, type Core } from "./platforms.ts";
+import { CORES, isPlatform, writeTouches, type Core } from "./platforms.ts";
 import type { Buttons, EmulatorEvent, EmulatorRequest, LoadResult, Platform, ProbeResult } from "./protocol.ts";
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
@@ -197,12 +197,8 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
           !Number.isInteger(req.frames) || req.frames < 1 || req.frames > 8) throw new Error("invalid network input");
       const ports = req.masks.map(mask => Object.fromEntries(names.map((name, i) => [name, !!(mask & (1 << i))])));
       host.setInput({ ports });
-      const at = platform === "nes" ? 0x03f0 : 0x10f0;
       for (let i = 0; i < req.frames; i++) {
-        const header = host.readMemory("system_ram", at, 3);
-        if (header[0] === 0x4e && header[1] === 0x50 && header[2] === 1)
-          host.writeMemory("system_ram", at + 3, Uint8Array.of(1, ...req.masks));
-        writeTouch(host, platform, null);
+        writeTouches(host, platform, []);
         host.stepFrames(1);
       }
       draw();
@@ -233,7 +229,7 @@ scope.onmessage = async (e: MessageEvent<EmulatorRequest>) => {
   if (req.type === "step") {
     if (!loaded || !host || busy) return;
     input(req.buttons);
-    writeTouch(host, platform, req.touch ?? null);
+    writeTouches(host, platform, req.touches);
     host.stepFrames(Math.max(1, Math.min(req.frames, 8)));
     draw();
     drainAudio(true);
