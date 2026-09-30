@@ -3,7 +3,7 @@
 // OffscreenCanvas handed over by the page; the canvas takes the core's screen size when a ROM loads. Frame pacing and
 // input timing belong to the page: it sends {type:"step", frames, buttons} from its animation loop at the core's fps.
 import { LibretroHost } from "romdev-core-host";
-import { CORES, isPlatform, writeTouch, type Core } from "./platforms.ts";
+import { CORES, isPlatform, writeTouches, type Core } from "./platforms.ts";
 import type { Buttons, EmulatorEvent, EmulatorRequest, LoadResult, Platform, ProbeResult } from "./protocol.ts";
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
@@ -209,7 +209,7 @@ scope.onmessage = async (e: MessageEvent<EmulatorRequest>) => {
   if (req.type === "step") {
     if (!loaded || !host || busy) return;
     input(req.buttons);
-    writeTouch(host, platform, req.touch ?? null);
+    writeTouches(host, platform, req.touches);
     host.stepFrames(Math.max(1, Math.min(req.frames, 8)));
     draw();
     drainAudio(true);
