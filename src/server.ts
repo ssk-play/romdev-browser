@@ -8,7 +8,7 @@
 //        -> { ok, stage, rom: base64|null, romBytesUsed, banks: { n: bytes }|null, issues, log, ms }
 //        gb/gbc: data (`#pragma constseg CODE_<n>`, n = 2-511) and `__banked` code (`#pragma codeseg CODE_<n>`) go
 //        to switchable ROM bank n; the cart becomes MBC5. nes: romdev's NES C project (32 KB PRG, CHR-RAM, battery).
-//   POST /run   { platform, rom: base64, frames, input: [{ frame, until, buttons }], shots: [frame], every,
+//   POST /run   { platform, rom: base64, frames, input: [{ frame, until, buttons, touch: {x, y} }], shots: [frame], every,
 //                 memory: [{ region, offset, length }] }
 //        -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png: base64 }], sram: base64|null, ms }
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -16,9 +16,9 @@ import { readFileSync } from "node:fs";
 import { crc32, deflateSync } from "node:zlib";
 import { LibretroHost } from "romdev-core-host";
 import { builder } from "./build.ts";
-import { CORES, isPlatform, PLATFORMS, type Core } from "./platforms.ts";
+import { CORES, isPlatform, PLATFORMS, writeTouch, type Core } from "./platforms.ts";
 import type { EmscriptenFactory, ShareName, ToolLoader } from "./wasmtool.ts";
-import type { Buttons, Platform } from "./protocol.ts";
+import type { Buttons, Platform, Touch } from "./protocol.ts";
 
 declare const __VERSION__: string;
 const asset = (name: string) => new URL(`./wasm/${name}`, import.meta.url);
@@ -89,11 +89,18 @@ function png(rgba: Uint8Array | Uint8ClampedArray, width: number, height: number
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
 }
 
-interface InputEntry { frame: number; until?: number; buttons: string[] }
+interface InputEntry { frame: number; until?: number; buttons: string[]; touch?: { x: number; y: number } }
 interface MemoryRead { region?: string; offset: number; length: number }
 interface RunRequest {
   platform: Platform; rom: string; frames?: number; input?: InputEntry[]; shots?: number[]; every?: number;
   memory?: MemoryRead[]; sram?: boolean;
+}
+
+/** The finger on the screen at frame `f` (the last entry that holds one then), for games that ask for touch. */
+function touchAt(input: InputEntry[], f: number): Touch {
+  let t: Touch = null;
+  for (const e of input) if (e.touch && f >= e.frame && f < (e.until ?? e.frame + 1)) t = { x: Number(e.touch.x) || 0, y: Number(e.touch.y) || 0 };
+  return t;
 }
 
 function buttonsAt(input: InputEntry[], f: number): Buttons {
@@ -107,7 +114,8 @@ async function run(req: RunRequest) {
   if (!isPlatform(req.platform)) throw platformError();
   const host = await emulator(CORES[req.platform]);
   const frames = Math.max(1, Math.min(MAX_FRAMES, Math.floor(req.frames ?? 300)));
-  const input = (req.input ?? []).filter((e) => e && Array.isArray(e.buttons) && e.buttons.every((b) => (BUTTONS as readonly string[]).includes(b)));
+  const input = (req.input ?? []).map((e) => ({ ...e, buttons: e?.buttons ?? [] }))
+    .filter((e) => Array.isArray(e.buttons) && e.buttons.every((b) => (BUTTONS as readonly string[]).includes(b)));
   const shots = [...new Set((req.shots ?? []).map(Math.floor).filter((s) => s > 0 && s <= frames))].sort((a, b) => a - b).slice(0, 8);
   const every = Math.max(0, Math.floor(req.every ?? 0));
   const stops = new Set<number>([...shots, frames]);
@@ -125,6 +133,7 @@ async function run(req: RunRequest) {
       const b = buttonsAt(input, cur);
       const key = JSON.stringify(b);
       if (key !== held) { host.setInput({ ports: [b] }); held = key; }
+      writeTouch(host, req.platform, touchAt(input, cur));
       // run to the next frame where the held buttons may change
       let next = stop;
       for (const e of input) for (const edge of [e.frame, e.until ?? e.frame + 1]) if (edge > cur && edge < next) next = edge;

@@ -38,7 +38,7 @@ lifetimes are safe). Workers resolve `./wasm/*` relative to their own URL.
 ### Compiler worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.5.2/compiler.worker.js", { type: "module" });
+const w = new Worker("/lib/romdev-browser/0.6.0/compiler.worker.js", { type: "module" });
 w.postMessage({ type: "warmup", platform: "gbc" });        // optional: start the toolchain download (SDCC ~21 MB, cc65 ~5 MB)
 w.postMessage({ type: "build", id: 1, input: { platform: "gbc", sources: { "main.c": src }, title: "MY GAME" } });
 ```
@@ -61,11 +61,11 @@ VRAM queue, palette, scroll) and `nes_runtime.c` (neslib-shaped: `ppu_*`, `oam_s
 ### Emulator worker
 
 ```js
-const w = new Worker("/lib/romdev-browser/0.5.2/emulator.worker.js", { type: "module" });
+const w = new Worker("/lib/romdev-browser/0.6.0/emulator.worker.js", { type: "module" });
 const off = canvas.transferControlToOffscreen();            // takes the core's screen size on load
 w.postMessage({ type: "init", canvas: off, platform: "gbc" }, [off]); // → {type:"ready"}; platform (optional) preloads its core
 w.postMessage({ type: "load", id: 1, rom, platform: "gbc", sram: null }); // → { width, height, fps }
-w.postMessage({ type: "step", frames: 1, buttons: { right: true, a: false } }); // from your rAF loop
+w.postMessage({ type: "step", frames: 1, buttons: { right: true, a: false }, touch: { x: 80, y: 72 } }); // from your rAF loop
 ```
 
 Requests with an `id` get `{type:"reply", id, ok, value | error}`:
@@ -78,6 +78,11 @@ stereo), rate}` after each step.
 
 Pacing and input timing are the page's job (the page decides how many frames to step and holds
 short taps long enough for the game to see them).
+
+Touch (optional; real hardware has none): `touch` is a finger on the game screen in the screen's pixels, or null.
+Only a game that asks for it gets it: its engine writes the magic `"TC"` (0x54 0x43) to the touch block in system RAM,
+and before every step the worker writes the next three bytes as [down 0/1, x, y] — gb/gbc at $D0F8 (system_ram
+0x10F8), nes at $03F8. Other games' RAM is never touched. The server's `/run` takes `touch: {x, y}` on an input entry.
 
 ## Develop
 
@@ -99,7 +104,7 @@ it in a container for its MCP endpoint). Stateless; requests are served one at a
 PORT=8080 [GAMELAB_KEY=secret] node dist/server.mjs
 GET  /health
 POST /build { platform: gb|gbc|nes, sources: { "main.c", ...extra .c/.h/.s }, title? }  -> { ok, stage, rom (base64), romBytesUsed, banks, issues, log, ms }
-POST /run   { platform, rom, frames, input: [{ frame, until, buttons }], shots: [frame], every, memory: [{ region, offset, length }], sram? }
+POST /run   { platform, rom, frames, input: [{ frame, until, buttons, touch? }], shots: [frame], every, memory: [{ region, offset, length }], sram? }
             -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png }], sram, ms }
 ```
 

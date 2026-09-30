@@ -3,8 +3,8 @@
 // OffscreenCanvas handed over by the page; the canvas takes the core's screen size when a ROM loads. Frame pacing and
 // input timing belong to the page: it sends {type:"step", frames, buttons} from its animation loop at the core's fps.
 import { LibretroHost } from "romdev-core-host";
-import { CORES, isPlatform, type Core } from "./platforms.ts";
-import type { Buttons, EmulatorEvent, EmulatorRequest, LoadResult, ProbeResult } from "./protocol.ts";
+import { CORES, isPlatform, writeTouch, type Core } from "./platforms.ts";
+import type { Buttons, EmulatorEvent, EmulatorRequest, LoadResult, Platform, ProbeResult } from "./protocol.ts";
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 const post = (m: EmulatorEvent, transfer: Transferable[] = []) => scope.postMessage(m, transfer);
@@ -15,6 +15,7 @@ let host: LibretroHost | null = null; // the core holding the loaded ROM
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let image: ImageData | null = null;
 let loaded = false;
+let platform: Platform = "gbc";   // of the loaded ROM
 let busy = 0; // requests in flight (probe awaits PNG encoding); steps are dropped meanwhile
 
 function hostFor(core: Core) {
@@ -163,6 +164,7 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
       host = h;
       await h.loadMedia({ platform: req.platform, bytes: req.rom, name: `game.${req.platform}` });
       loaded = true;
+      platform = req.platform;
       if (req.sram?.length) {
         try {
           if (h.regionSize("save_ram") >= req.sram.length) {
@@ -207,6 +209,7 @@ scope.onmessage = async (e: MessageEvent<EmulatorRequest>) => {
   if (req.type === "step") {
     if (!loaded || !host || busy) return;
     input(req.buttons);
+    writeTouch(host, platform, req.touch ?? null);
     host.stepFrames(Math.max(1, Math.min(req.frames, 8)));
     draw();
     drainAudio(true);
