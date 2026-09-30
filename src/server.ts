@@ -8,7 +8,7 @@
 //        -> { ok, stage, rom: base64|null, romBytesUsed, banks: { n: bytes }|null, issues, log, ms }
 //        gb/gbc: data (`#pragma constseg CODE_<n>`, n = 2-511) and `__banked` code (`#pragma codeseg CODE_<n>`) go
 //        to switchable ROM bank n; the cart becomes MBC5. nes: romdev's NES C project (32 KB PRG, CHR-RAM, battery).
-//   POST /run   { platform, rom: base64, frames, input: [{ frame, until, buttons, touch: {x, y} }], shots: [frame], every,
+//   POST /run   { platform, rom: base64, frames, input: [{ frame, until, buttons, touch: {x, y} | touches: [{x, y} | null] }], shots: [frame], every,
 //                 memory: [{ region, offset, length }] }
 //        -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png: base64 }], sram: base64|null, ms }
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -16,9 +16,9 @@ import { readFileSync } from "node:fs";
 import { crc32, deflateSync } from "node:zlib";
 import { LibretroHost } from "romdev-core-host";
 import { builder } from "./build.ts";
-import { CORES, isPlatform, PLATFORMS, writeTouch, type Core } from "./platforms.ts";
+import { CORES, isPlatform, PLATFORMS, writeTouches, type Core } from "./platforms.ts";
 import type { EmscriptenFactory, ShareName, ToolLoader } from "./wasmtool.ts";
-import type { Buttons, Platform, Touch } from "./protocol.ts";
+import type { Buttons, Platform, Touches } from "./protocol.ts";
 
 declare const __VERSION__: string;
 const asset = (name: string) => new URL(`./wasm/${name}`, import.meta.url);
@@ -89,17 +89,22 @@ function png(rgba: Uint8Array | Uint8ClampedArray, width: number, height: number
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
 }
 
-interface InputEntry { frame: number; until?: number; buttons: string[]; touch?: { x: number; y: number } }
+interface InputEntry { frame: number; until?: number; buttons: string[]; touch?: { x: number; y: number }; touches?: ({ x: number; y: number } | null)[] }
 interface MemoryRead { region?: string; offset: number; length: number }
 interface RunRequest {
   platform: Platform; rom: string; frames?: number; input?: InputEntry[]; shots?: number[]; every?: number;
   memory?: MemoryRead[]; sram?: boolean;
 }
 
-/** The finger on the screen at frame `f` (the last entry that holds one then), for games that ask for touch. */
-function touchAt(input: InputEntry[], f: number): Touch {
-  let t: Touch = null;
-  for (const e of input) if (e.touch && f >= e.frame && f < (e.until ?? e.frame + 1)) t = { x: Number(e.touch.x) || 0, y: Number(e.touch.y) || 0 };
+/** The fingers at frame `f`: an entry's `touches` (slot by slot) or `touch` (slot 0), later entries winning per slot. */
+function touchesAt(input: InputEntry[], f: number): Touches {
+  const t: Touches = [];
+  const point = (p: { x: number; y: number } | null | undefined) => (p ? { x: Number(p.x) || 0, y: Number(p.y) || 0 } : null);
+  for (const e of input) {
+    if (f < e.frame || f >= (e.until ?? e.frame + 1)) continue;
+    const list = Array.isArray(e.touches) ? e.touches : e.touch ? [e.touch] : [];
+    list.slice(0, 64).forEach((p, i) => { if (p) t[i] = point(p); });
+  }
   return t;
 }
 
@@ -133,7 +138,7 @@ async function run(req: RunRequest) {
       const b = buttonsAt(input, cur);
       const key = JSON.stringify(b);
       if (key !== held) { host.setInput({ ports: [b] }); held = key; }
-      writeTouch(host, req.platform, touchAt(input, cur));
+      writeTouches(host, req.platform, touchesAt(input, cur));
       // run to the next frame where the held buttons may change
       let next = stop;
       for (const e of input) for (const edge of [e.frame, e.until ?? e.frame + 1]) if (edge > cur && edge < next) next = edge;

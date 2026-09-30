@@ -104,28 +104,31 @@ test("server builds and runs NES next to GBC in one process", async (t) => {
   assert.match(bad.error, /platform: gb or gbc or nes/);
 });
 
-test("server hands touch only to a game that asks for it", async (t) => {
+test("server hands fingers only to a game that asks for them", async (t) => {
   const port = 18000 + Math.floor(Math.random() * 1000);
   const proc = spawn(process.execPath, [path.join(root, "dist", "server.mjs")], { env: { ...process.env, PORT: String(port) }, stdio: "pipe" });
   t.after(() => proc.kill());
   await new Promise((ok, fail) => { proc.stdout.on("data", ok); proc.on("exit", fail); });
   const post = async (p, body) => (await fetch(`http://127.0.0.1:${port}${p}`, { method: "POST", body: JSON.stringify(body) })).json();
-  // [down, x, y] of the touch block, copied each frame to $D000.. so the run can read what the game saw
+  // a 2-finger buffer; each frame the game copies it and the count to $D000.. so the run can read what it saw
   const game = (asks) => `#include "gb_hardware.h"
 #include "gb_runtime.h"
-__at (0xD000) unsigned char seen[3];
-__at (0xD0F8) unsigned char touch[5];
+__at (0xD000) unsigned char seen[7];
+__at (0xD0F8) unsigned char header[6];
+unsigned char fingers[6];
 void main(void) {
-  ${asks ? "touch[0] = 0x54; touch[1] = 0x43;" : ""}
-  for (;;) { wait_vblank(); seen[0] = touch[2]; seen[1] = touch[3]; seen[2] = touch[4]; }
+  unsigned char i;
+  ${asks ? "header[2] = (unsigned char)((unsigned int)fingers & 0xFF); header[3] = (unsigned char)((unsigned int)fingers >> 8); header[4] = 2; header[0] = 0x54; header[1] = 0x43;" : ""}
+  for (;;) { wait_vblank(); for (i = 0; i < 6; i++) seen[i] = fingers[i]; seen[6] = header[5]; }
 }
 `;
-  const touch = [{ frame: 30, until: 60, buttons: [], touch: { x: 77, y: 33 } }];
+  const input = [{ frame: 30, until: 60, buttons: [], touches: [{ x: 77, y: 33 }, { x: 10, y: 20 }] }];
   const asks = await post("/build", { platform: "gbc", sources: { "main.c": game(true) } });
   assert.ok(asks.ok, asks.log);
-  const r = await post("/run", { platform: "gbc", rom: asks.rom, frames: 90, input: touch, every: 45, memory: [{ offset: 0x1000, length: 3 }] });
-  assert.deepEqual(r.rows.map((x) => x.memory[0]), ["014d21", "000000"]);   // down at 45 (x 77, y 33), up at 90
+  const r = await post("/run", { platform: "gbc", rom: asks.rom, frames: 90, input, every: 45, memory: [{ offset: 0x1000, length: 7 }] });
+  // both down at 45; at 90 both lifted, each keeping where it let go
+  assert.deepEqual(r.rows.map((x) => x.memory[0]), ["014d21010a1402", "004d21000a1400"]);
   const other = await post("/build", { platform: "gbc", sources: { "main.c": game(false) } });
-  const o = await post("/run", { platform: "gbc", rom: other.rom, frames: 90, input: touch, every: 45, memory: [{ offset: 0x10f8, length: 5 }] });
-  assert.ok(o.rows.every((x) => x.memory[0].slice(4) === "000000"), JSON.stringify(o.rows));   // never written
+  const o = await post("/run", { platform: "gbc", rom: other.rom, frames: 90, input, every: 45, memory: [{ offset: 0x1000, length: 7 }] });
+  assert.ok(o.rows.every((x) => x.memory[0] === "00000000000000"), JSON.stringify(o.rows));   // never written
 });
