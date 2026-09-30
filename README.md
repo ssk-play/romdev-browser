@@ -112,12 +112,10 @@ POST /run   { platform, rom, frames, input: [{ frame, until, buttons, touch?, to
 ```
 
 
-### Network input (0.6.1)
+### Network input (0.8.0)
 
 `{type:"advance", id, frames:1..8, masks:[p1,p2]}` advances exactly the requested frames and replies with
 `{hash}` (FNV-1a of system RAM and save RAM, for comparing matching frame checkpoints). No autonomous clock.
 The mask bits from low to high are Right, Left, Up, Down, A, B, Select, Start. Both controller ports are set
-(NES uses its two hardware ports). Games can also opt in to the pads-v1 bridge: put `['N','P',1,0,0,0]`
-at CPU $D0F0 (GB/GBC) or $03F0 (NES). Before every network frame the last three bytes become
-`[connected:1,p1Mask,p2Mask]`. This is a browser feature, independent of link-cable emulation; other emulators
-and real GB hardware have no network. Single-player `step` is unchanged.
+(NES uses its two hardware ports). Network batches clear touch helpers and do not use link-cable emulation.
+Single-player `step` is unchanged.
