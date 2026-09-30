@@ -119,3 +119,18 @@ POST /run   { platform, rom, frames, input: [{ frame, until, buttons, touch?, to
 The mask bits from low to high are Right, Left, Up, Down, A, B, Select, Start. Both controller ports are set
 (NES uses its two hardware ports). Network batches clear touch helpers and do not use link-cable emulation.
 Single-player `step` is unchanged.
+
+### Local rollback (0.9.0)
+
+`{type:"networkBegin", id}` stores the loaded ROM's complete libretro state and replies with `{stateBytes}`.
+`{type:"networkStep", id, frame, masks:[p1,p2], confirmed}` executes one frame, stores its full state, draws,
+and emits forward audio. `frame` starts at zero; `confirmed` is the last canonical input frame, initially -1.
+`{type:"networkReplay", id, from, inputs:[[p1,p2],...], confirmed}` restores the snapshot **before** `from`,
+resimulates through the current frame, and draws the corrected final image. All replay audio is discarded.
+Both step and replay reply with `[{seq,hash},...]` for frame 59, 119, etc. Hashes cover system and save RAM;
+the caller compares them only after those inputs are confirmed and all corrections complete.
+
+Snapshots remain inside the worker. Confirmed snapshots are pruned; an unconfirmed window above 64 frames
+is rejected. The caller owns prediction, input transport, pacing and a smaller prediction limit (chiptoy uses 18).
+Network requests clear touch helpers and set both native controller ports. Load/reset clears rollback history.
+Do not mix autonomous `step`, reset, or probe with an active network session. No core/toolchain patch is required.

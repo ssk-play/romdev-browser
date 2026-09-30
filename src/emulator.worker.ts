@@ -2,6 +2,7 @@
 // The platform's libretro core (see platforms.ts) driven by romdev-core-host in bytes-only mode, drawing to an
 // OffscreenCanvas handed over by the page; the canvas takes the core's screen size when a ROM loads. Frame pacing and
 // input timing belong to the page: it sends {type:"step", frames, buttons} from its animation loop at the core's fps.
+import { RollbackCore } from "./rollback.ts";
 import { LibretroHost } from "romdev-core-host";
 import { CORES, isPlatform, writeTouches, type Core } from "./platforms.ts";
 import type { Buttons, EmulatorEvent, EmulatorRequest, LoadResult, Platform, ProbeResult } from "./protocol.ts";
@@ -16,6 +17,7 @@ let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let image: ImageData | null = null;
 let loaded = false;
 let platform: Platform = "gbc";   // of the loaded ROM
+let rollback: RollbackCore | null = null;
 let busy = 0; // requests in flight (probe awaits PNG encoding); steps are dropped meanwhile
 
 function hostFor(core: Core) {
@@ -154,9 +156,25 @@ async function probe(): Promise<ProbeResult> {
   return { blank, inputReactive: idle !== moved, screenshot, screens };
 }
 
+function networkFrame(masks: number[]) {
+  const names = ["right", "left", "up", "down", "a", "b", "select", "start"] as const;
+  host!.setInput({ ports: masks.map(mask => Object.fromEntries(names.map((name, i) => [name, !!(mask & (1 << i))]))) });
+  writeTouches(host!, platform, []); host!.stepFrames(1);
+}
+function memoryHash() {
+  let hash = 2166136261;
+  for (const region of ["system_ram", "save_ram"]) {
+    const n = host!.regionSize(region);
+    const bytes = host!.readMemory(region, 0, n);
+    for (let i = 0; i < bytes.length; i++) hash = Math.imul(hash ^ bytes[i], 16777619);
+  }
+  return hash >>> 0;
+}
+
 async function handle(req: EmulatorRequest): Promise<unknown> {
   switch (req.type) {
     case "load": {
+      rollback = null;
       if (!isPlatform(req.platform)) throw new Error(`unknown platform ${req.platform}`);
       const h = await hostFor(CORES[req.platform]);
       if (loaded) host!.unloadMedia(); // the previous ROM, on this core or another
@@ -182,6 +200,7 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
       return { width: f?.width ?? h.status.fbWidth, height: f?.height ?? h.status.fbHeight, fps: h.status.coreFps } satisfies LoadResult;
     }
     case "reset":
+      rollback = null;
       if (loaded) {
         host!.reset();
         drainAudio(false);
@@ -190,6 +209,22 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
     case "probe":
       if (!loaded) throw new Error("no ROM loaded");
       return probe();
+    case "networkBegin":
+      if (!loaded || !host) throw new Error("No ROM loaded");
+      drainAudio(false);
+      rollback = new RollbackCore({ save: () => host!.serializeState(), restore: state => { host!.unserializeState(state); },
+        frame: networkFrame, hash: memoryHash, discardAudio: () => drainAudio(false) });
+      return { stateBytes: rollback.bytes };
+    case "networkStep": {
+      if (!rollback) throw new Error("Start network first");
+      const checks = rollback.step(req.frame, req.masks, req.confirmed);
+      draw(); drainAudio(true); return checks;
+    }
+    case "networkReplay": {
+      if (!rollback) throw new Error("Start network first");
+      const checks = rollback.replay(req.from, req.inputs, req.confirmed);
+      draw(); return checks;
+    }
     case "advance": {
       if (!loaded || !host) throw new Error("no ROM loaded");
       const names = ["right", "left", "up", "down", "a", "b", "select", "start"] as const;
@@ -206,7 +241,8 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
       let hash = 2166136261;
       for (const region of ["system_ram", "save_ram"]) {
         const n = host.regionSize(region);
-        if (n) for (const byte of host.readMemory(region, 0, n)) hash = Math.imul(hash ^ byte, 16777619);
+        const bytes = host.readMemory(region, 0, n);
+        for (let i = 0; i < bytes.length; i++) hash = Math.imul(hash ^ bytes[i], 16777619);
       }
       return { hash: hash >>> 0 };
     }
