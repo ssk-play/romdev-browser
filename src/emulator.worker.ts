@@ -190,6 +190,30 @@ async function handle(req: EmulatorRequest): Promise<unknown> {
     case "probe":
       if (!loaded) throw new Error("no ROM loaded");
       return probe();
+    case "advance": {
+      if (!loaded || !host) throw new Error("no ROM loaded");
+      const names = ["right", "left", "up", "down", "a", "b", "select", "start"] as const;
+      if (req.masks.length !== 2 || req.masks.some(m => !Number.isInteger(m) || m < 0 || m > 255) ||
+          !Number.isInteger(req.frames) || req.frames < 1 || req.frames > 8) throw new Error("invalid network input");
+      const ports = req.masks.map(mask => Object.fromEntries(names.map((name, i) => [name, !!(mask & (1 << i))])));
+      host.setInput({ ports });
+      const at = platform === "nes" ? 0x03f0 : 0x10f0;
+      for (let i = 0; i < req.frames; i++) {
+        const header = host.readMemory("system_ram", at, 3);
+        if (header[0] === 0x4e && header[1] === 0x50 && header[2] === 1)
+          host.writeMemory("system_ram", at + 3, Uint8Array.of(1, ...req.masks));
+        writeTouch(host, platform, null);
+        host.stepFrames(1);
+      }
+      draw();
+      drainAudio(true);
+      let hash = 2166136261;
+      for (const region of ["system_ram", "save_ram"]) {
+        const n = host.regionSize(region);
+        if (n) for (const byte of host.readMemory(region, 0, n)) hash = Math.imul(hash ^ byte, 16777619);
+      }
+      return { hash: hash >>> 0 };
+    }
     case "readSram":
       return loaded ? readSram() : null;
     default:

@@ -39,7 +39,8 @@ export type EmulatorRequest =
   | { type: "step"; frames: number; buttons: Buttons; touch?: Touch }
   | { type: "reset"; id: number }
   | { type: "probe"; id: number }
-  | { type: "readSram"; id: number };
+  | { type: "readSram"; id: number }
+  | { type: "advance"; id: number; masks: number[]; frames: number };
 export type EmulatorEvent =
   | { type: "ready" }
   | { type: "audio"; pcm: Int16Array; rate: number }
