@@ -76,7 +76,7 @@ async function peer(join, delay){
 try{
  const first=await call('join_game',{mode:room==='public'?'public':'invite',client:crypto.randomUUID(),...(room&&room!=='pair'&&room!=='public'?{room}:{})});joins.push(first);
  if(room==='pair'){
-  const second=await call('join_game',{mode:'invite',room:first.room,client:crypto.randomUUID()});joins.push(second);
+  const second=await call('join_game',{mode:'invite',code:first.code,client:crypto.randomUUID()});joins.push(second);
   await Promise.all([peer(first,false),peer(second,true)]);
  }else await peer(first,true);
  await Promise.all(peers.map(p=>p.done));

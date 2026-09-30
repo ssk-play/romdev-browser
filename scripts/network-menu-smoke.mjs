@@ -2,7 +2,6 @@
 // node scripts/network-menu-smoke.mjs https://dev.chiptoy.com <game UUID>
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { LibretroHost } from 'romdev-core-host';
 import { NetworkBridge } from '../src/network-bridge.ts';
 const [origin,game]=process.argv.slice(2),browser=new URL('../',import.meta.url);
@@ -18,7 +17,7 @@ function frames(n,buttons={},playing=false){
 }
 function reset(){host.writeMemory('save_ram',0,new Uint8Array(8192));host.reset();host.stepFrames(1);bridge.reset();actions.length=0}
 reset();frames(90);frames(4,{a:true});frames(10);assert.deepEqual(actions,['join']);
-function tap(key){frames(8,{[key]:true});frames(30)}
+function tap(key){frames(4,{[key]:true});frames(12)}
 function friends(){reset();frames(90);tap('down');tap('a')}
 friends();tap('a');assert.deepEqual(actions,['invite']);
 bridge.status=3;bridge.code='UDLRAB';frames(180);assert.equal(host.readMemory('system_ram',0x307,1)[0],3);
