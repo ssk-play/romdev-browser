@@ -2,6 +2,7 @@
 // Run from the app worktree with a dev-only MCP_BEARER in the environment:
 // node ../romdev-browser/scripts/network-integration.mjs ./src/runtime/rollback.ts https://dev.chiptoy.com <game UUID> pair 100 80 30
 // Replace "pair" with a waiting invitation room UUID, or "public" for a browser in Online play. Added delays affect only the second peer.
+// Optional last argument "tetris" selects a controller-only TETRIS DUEL bot.
 // A shared NES fixture is required; no persistent data is written and all joined rooms are cleaned up.
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
@@ -11,9 +12,10 @@ import WebSocket from 'ws';
 import { LibretroHost } from 'romdev-core-host';
 import { NetworkBridge } from '../src/network-bridge.ts';
 import { RollbackCore } from '../src/rollback.ts';
+import { playerBot } from './tetris-bot.mjs';
 import { writeTouches } from '../src/platforms.ts';
 const browser=resolve(import.meta.dirname,'..');
-const [clientModule, origin='https://dev.chiptoy.com', game, room='pair', out='60', incoming='40', duration='30']=process.argv.slice(2);
+const [clientModule, origin='https://dev.chiptoy.com', game, room='pair', out='60', incoming='40', duration='30',profile='duel']=process.argv.slice(2);
 assert.ok(clientModule, 'Pass the client rollback.ts module path');
 assert.ok(['dev.chiptoy.com','127.0.0.1','localhost'].includes(new URL(origin).hostname), 'Dev/local only');
 assert.match(game??'',/^[0-9a-f-]{36}$/, 'Pass a disposable shared NES game UUID');
@@ -36,12 +38,13 @@ async function peer(join, delay){
  const names=['right','left','up','down','a','b','select','start'];
  const bridge = new NetworkBridge();
  const core={save:()=>host.serializeState(),restore:s=>host.unserializeState(s),frame:m=>{host.setInput({ports:m.map(mask=>Object.fromEntries(names.map((b,i)=>[b,!!(mask&(1<<i))])))});bridge.write(host,'nes',true);writeTouches(host,'nes',[]);host.stepFrames(1)},hash:()=>{let h=2166136261;for(const r of ['system_ram','save_ram'])for(const b of host.readMemory(r,0,host.regionSize(r)))h=Math.imul(h^b,16777619);return h>>>0},discardAudio:()=>{host.state.audioRing.length=0}};
+ const bot=profile==='tetris'?playerBot(join.slot):null;
  const rollback=new RollbackCore(core),timeline=new RollbackTimeline(join.slot,{step:async(...a)=>{const c=rollback.step(...a);core.discardAudio();return c},replay:async(...a)=>rollback.replay(...a)});
  const ws=new WebSocket(origin.replace(/^http/,'ws')+'/api/network/'+game+'/socket?ticket='+join.ticket,{headers:{origin}});sockets.push(ws);
  let stopped=false,started=false,nextDue=0,busy=false,stalls=0,starving=false,maxPrediction=0,checks=0,frameWork=0,began=0,timer,finish; const sentAt=new Map(), rtts=[], ages=[];
  const done=new Promise(resolve=>finish=resolve);
  const send=m=>{if(ws.readyState===WebSocket.OPEN&&!stopped)ws.send(JSON.stringify(m))};
- const stop=reason=>{if(stopped)return;stopped=true;clearTimeout(timer);const r={slot:join.slot,frames:timeline.next,fps:Math.round(timeline.next*1000/(performance.now()-began)),rollbacks:timeline.rollbacks,replayed:timeline.replayed,maxPrediction,stalls,checks,medianRtt:rtts.sort((a,b)=>a-b)[Math.floor(rtts.length/2)],medianConfirmationMs:ages.sort((a,b)=>a-b)[Math.floor(ages.length/2)],health:[...host.readMemory('system_ram',0x3fe,2)],positions:[...host.readMemory('system_ram',0x300,7)],frameWorkMs:Math.round(frameWork),reason};results.push(r);console.log(JSON.stringify(r));finish(r)};
+ const stop=reason=>{if(stopped)return;stopped=true;clearTimeout(timer);const r={slot:join.slot,frames:timeline.next,fps:Math.round(timeline.next*1000/(performance.now()-began)),rollbacks:timeline.rollbacks,replayed:timeline.replayed,maxPrediction,stalls,checks,medianRtt:rtts.sort((a,b)=>a-b)[Math.floor(rtts.length/2)],medianConfirmationMs:ages.sort((a,b)=>a-b)[Math.floor(ages.length/2)],health:[...host.readMemory('system_ram',0x3fe,2)],gameState:profile==='tetris'?[...host.readMemory('system_ram',0x314,32)]:undefined,positions:[...host.readMemory('system_ram',0x300,7)],frameWorkMs:Math.round(frameWork),reason};results.push(r);console.log(JSON.stringify(r));finish(r)};
  async function tick(){
   if(stopped||busy)return;busy=true;const start=performance.now();
   try{
@@ -50,7 +53,7 @@ async function peer(join, delay){
     if(!timeline.canAdvance){if(!starving)stalls++;starving=true;nextDue=performance.now();break}
     starving=false;const seq=timeline.next,k=seq%240;
     // Gold moves in both directions and jumps/dashes frequently, forcing browser corrections.
-    const mask=(k<100?2:k<200?1:0)|(seq%97<3?16:0)|(seq%71<3?32:0);
+    const mask=bot?bot(host.readMemory('system_ram',0x300,256)):(k<100?2:k<200?1:0)|(seq%97<3?16:0)|(seq%71<3?32:0);
     await timeline.advance(mask,(seq,mask)=>{sentAt.set(seq,performance.now());const msg={type:'input',seq,mask};if(delay)setTimeout(()=>send(msg),outDelay);else send(msg)});
     maxPrediction=Math.max(maxPrediction,timeline.prediction);await timeline.reconcile();
     for(const c of timeline.checks()){send({type:'check',...c});checks++}
