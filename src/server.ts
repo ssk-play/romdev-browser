@@ -19,8 +19,10 @@ import { builder } from "./build.ts";
 import { CORES, isPlatform, PLATFORMS, writeTouches, type Core } from "./platforms.ts";
 import type { EmscriptenFactory, ShareName, ToolLoader } from "./wasmtool.ts";
 import type { Buttons, Platform, Touches } from "./protocol.ts";
+import { runBundle, type BundleRunRequest } from "./bundle-headless.ts";
 
 declare const __VERSION__: string;
+declare const __BUNDLE_BUILD__: string;
 const asset = (name: string) => new URL(`./wasm/${name}`, import.meta.url);
 const MAX_FRAMES = 60 * 60 * 10;
 const BUTTONS = ["up", "down", "left", "right", "a", "b", "start", "select"] as const;
@@ -156,12 +158,20 @@ async function run(req: RunRequest) {
   return { rows, shots: pics, sram, ms: Date.now() - t0 };
 }
 
-async function build(req: { platform: Platform; sources: Record<string, string>; title?: string }) {
+async function build(req: import("./toolchain.ts").BuildInput) {
   if (!isPlatform(req.platform)) throw platformError();
   if (!req.sources || typeof req.sources["main.c"] !== "string") throw new Error("sources must include main.c");
-  const r = await buildRom({ platform: req.platform, sources: req.sources, title: req.title });
+  const r = await buildRom({ platform: req.platform, sources: req.sources, title: req.title, memoryContract:req.memoryContract });
   return { ok: r.ok, stage: r.stage, rom: r.rom ? Buffer.from(r.rom).toString("base64") : null, romBytesUsed: r.romBytesUsed,
     banks: r.banks ?? null, issues: r.issues, log: r.log.slice(-4000), ms: r.ms };
+}
+
+async function bundleRun(req:BundleRunRequest) {
+  current?.unloadMedia();current=null;
+  return runBundle(req,__BUNDLE_BUILD__,async()=>{
+    const core=CORES[req.config.platform],factory=(await import(asset(`${core}.mjs`).href)).default,h=new LibretroHost();
+    try{await h.loadCore({factory,wasmBinary:new Uint8Array(readFileSync(asset(`${core}.wasm`))),io:false});return h;}catch(e){h.dispose();throw e;}
+  },(rgba,width,height)=>png(rgba,width,height).toString("base64"));
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -185,6 +195,7 @@ createServer(async (req, res) => {
     if (KEY && req.headers["x-gamelab-key"] !== KEY) return send(res, 401, { error: "unauthorized" });
     if (req.method === "POST" && req.url === "/build") { const b = await body(req); return send(res, 200, await serial(() => build(b))); }
     if (req.method === "POST" && req.url === "/run") { const b = await body(req); return send(res, 200, await serial(() => run(b))); }
+    if (req.method === "POST" && req.url === "/bundle/run") { const b = await body(req); return send(res, 200, await serial(() => bundleRun(b))); }
     send(res, 404, { error: "not found" });
   } catch (err) {
     send(res, 400, { error: (err as Error).message });

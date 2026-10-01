@@ -109,60 +109,111 @@ GET  /health
 POST /build { platform: gb|gbc|nes, sources: { "main.c", ...extra .c/.h/.s }, title? }  -> { ok, stage, rom (base64), romBytesUsed, banks, issues, log, ms }
 POST /run   { platform, rom, frames, input: [{ frame, until, buttons, touch?, touches? }], shots: [frame], every, memory: [{ region, offset, length }], sram? }
             -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png }], sram, ms }
+POST /bundle/run { config, rom, frames, input?: FrameInput[], shots?: number[], every?, memory?: [{region,offset,length}] }
+            -> { build, descriptor, consoleSlots, schemas, digest, snapshotBytes, rows, shots, ms }
 ```
 
+`/build` and the compiler worker also accept an optional `memoryContract`:
+`{abi:1,engineFiles:{"engine.c":<sha256>,"engine.h"?:<sha256>,"engine.s"?:<sha256>},contextSymbol}`.
+The host supplies it only after recognizing its pinned, read-only MP engine; game
+JSON cannot opt into or redefine that trust. SDCC's existing `.adb` plus generated
+assembly supply folded absolute object addresses and complete sizes; cc65 uses
+its preprocessed C, generated assembly and verbose linker map. The contract
+rejects game allocations crossing MP/TC header bytes (`$D0F0–$D0FF` / `$03F0–$03FF`),
+RAM mirrors, the engine's linked 32-byte context, and unverifiable raw absolute
+assembly definitions. Typed constant pointer aliases/literal writes supplement
+allocation records, including macros and included assembly. Legitimate computed
+indirect accesses remain permitted: this is a build-time ownership check and
+authoring rule, not a malicious-ROM memory sandbox. Old solo builds omit the
+contract; chiptoy's new engine/state-page recognition and guides belong to M3.
 
-### Network input (0.8.0)
+`/bundle/run` boots fresh isolated cores using the exact worker adapter. It accepts
+up to 3600 native frames and a contiguous zero-based trace; any remaining frames
+use neutral inputs and the initial active seats. Sampling uses completed-frame
+counts, at most 64 stops, 8 screenshot stops and 32 memory reads of at most 256
+bytes each. Rows/shots contain an ordered `consoles` array with canonical slot
+and per-console memory/PNG. Final `digest` uses an offline empty stream position,
+not a room certificate. All cores are disposed after each request. Raw memory
+samples at native boundaries are **not** M3's pre-render logical-world equality
+check. Optional `world {trigger, tick, fields, value?}` binds the lower core's
+nonintrusive observation hook. The engine writes an unbanked LE32 tick and then
+marker `0xa5` after world update and before drawing; physical RAM fields are copied
+at that write. The diagnostic compares matching logical ticks, rejects repeated/
+missing publications, overflow and more than eight unmatched ticks, and reports
+trailing unmatched ticks separately. Differences identify tick, canonical slots,
+field, physical offset and both values. Bounds are 32 named fields and 1024 bytes;
+engine context/header/tick overlaps are rejected. This low-level binding is trusted
+host input: M3 must derive publisher symbols from the pinned engine, validate the
+author's world schema, and preserve publication in shared/solo execution.
+It does not synchronize consoles whose game logic consumes different inputs.
 
-`{type:"advance", id, frames:1..8, masks:[p1,p2]}` advances exactly the requested frames and replies with
-`{hash}` (FNV-1a of system RAM and save RAM, for comparing matching frame checkpoints). No autonomous clock.
-The mask bits from low to high are Right, Left, Up, Down, A, B, Select, Start. Both controller ports are set
-(NES uses its two hardware ports). Network batches clear touch helpers and do not use link-cable emulation.
-Single-player `step` is unchanged.
 
-### Local rollback (0.9.0)
+### Deterministic console bundles (1.0.0)
 
-`{type:"networkBegin", id}` stores the loaded ROM's complete libretro state and replies with `{stateBytes}`.
-`{type:"networkStep", id, frame, masks:[p1,p2], confirmed}` executes one frame, stores its full state, draws,
-and emits forward audio. `frame` starts at zero; `confirmed` is the last canonical input frame, initially -1.
-`{type:"networkReplay", id, from, inputs:[[p1,p2],...], confirmed}` restores the snapshot **before** `from`,
-resimulates through the current frame, and draws the corrected final image. All replay audio is discarded.
-Both step and replay reply with `[{seq,hash},...]` for frame 59, 119, etc. Hashes cover system and save RAM;
-the caller compares them only after those inputs are confirmed and all corrections complete.
+The experimental network advance/rollback commands, cartridge lobby mailbox and
+legacy network bridge have been removed. There is no compatibility layer.
+Ordinary solo playback still uses `emulator.worker.js`.
 
-Snapshots remain inside the worker. Confirmed snapshots are pruned; an unconfirmed window above 64 frames
-is rejected. The caller owns prediction, input transport, pacing and a smaller prediction limit (chiptoy uses 24).
-Network requests clear touch helpers and set both native controller ports. Load/reset clears rollback history.
-Do not mix autonomous `step`, reset, or probe with an active network session. No core/toolchain patch is required.
+`bundle.worker.js` is a separate worker for the multiplayer emulator contract.
+It does not open sockets, choose a transport, predict inputs or authorize rooms.
+Clients own those decisions and communicate only through postMessage.
 
-The optional `scripts/network-integration.mjs` harness boots independent fceumm instances and joins real
-Cloudflare rooms over MCP/WebSockets. Pass the client timeline module path, a local/dev origin, a shared NES game
-UUID, `pair` (two headless participants), an invitation UUID or `public` (join a waiting browser), added outbound
-and inbound delay in ms, and test duration in seconds. Dev needs its authorized `MCP_BEARER` in the environment;
-credentials and socket tickets are never printed. It checks canonical hashes, average frame rate and engine health,
-reports prediction/stall/rollback counters, and cleans up its rooms. Live jitter may exhaust the prediction budget;
-zero stalls are not asserted for an arbitrary Internet connection. The app never imports this harness or the core.
+- `init {canvas}` transfers an OffscreenCanvas; `load {rom, config}` starts an epoch
+  with standard zero cartridge RAM, fixed deterministic RTC and the new MP ABI.
+  `config` fixes platform, shared/player-views mode, occupied slots, capacity,
+  epoch, seed, spike policy, prediction window (1–24) and RTC epoch seconds. Unknown
+  config keys are rejected and descriptor hashing uses a fixed-order tuple.
+- Shared mode runs one console. GB/GBC player-views runs the same ordered N consoles
+  on every client, with each console's ROM slot fixed for its lifetime. Two players
+  use two consoles; occupied slots may have gaps. NES always runs one console with
+  native ordinary/Four Score controllers and an engine-owned RAM mirror.
+- `frame {input}` queues one contiguous input vector (frame, four masks, four seat
+  states), then performs a bounded slice. `pump` continues incomplete work. Neither
+  command advances on its own clock. The default slice is 8ms and 128 native
+  operations at most; a native frame/save/restore cannot be preempted and overshoot
+  is reported. The caller must keep input capture independent of this worker.
+- `correct {inputs, confirmed}` reconciles provisional inputs against the DO's
+  immutable confirmed stream. Multiple unfinished corrections coalesce. `confirm`
+  moves the watermark without changing masks. Partial consoles stay hidden;
+  historical replay audio is discarded. `view {slot}` selects output without
+  changing any console's deterministic state (`0xff` selects the shared view).
+- `digest {afterFrame, position}` returns agreement metadata without copying native
+  snapshot buffers; the boundary must still be corrected, confirmed and retained.
+- `checkpoint {afterFrame, position}` returns a bounded full bundle with descriptor,
+  core schemas, ordered causal digests and stream position. Byte integrity and
+  agreement digest are separate. `restore` validates the envelope before restoring
+  every canonical console. Room certification and checkpoint upload are the host's
+  responsibility, outside the input connection. After restore, the last complete
+  image is held and `presentationStale` remains true until a complete new frame.
+- `inspect` permits bounded RAM reads only at completed, corrected boundaries.
+  Optional diagnostic `probe {region}` checksums at most 4096 selected-view pixels
+  and returns `pixelHash` with frame/pump replies; null disables it. This checksum
+  is output telemetry, never a state digest or input to simulation.
+  `dispose` releases the bundle. Replies are `{type:"reply", id, ok, value/error}`;
+  forward audio is a separate transferred PCM event. Errors do not turn partial
+  state into a displayed or certified bundle.
 
-### Optional NES cartridge network menu (0.11.0)
+Input mask bits are Right, Left, Up, Down, A, B, Select, Start. Slot states are
+absent=0, active=1, held=2, inactive=3, left=4. User IDs, local client numbers,
+network clocks and connection data never enter emulated RAM. The ABI context's
+`my_slot` belongs to the canonical console, not the browser viewing it.
 
-ABI 1 remains supported: bytes `4E 58 01` at CPU $03E0, command at $03E3
-(`1` join, `2` create invitation, `3` leave), status at $03E4
-(`0` unavailable, `1` idle, `2` connecting, `3` waiting, `4` playing, `5` ended).
-ABI 2 advertises `4E 58 02`, adds status `6` error, command `4` enter code,
-count at $03E5 and six symbols at $03E6-$03EB (1=up, 2=down, 3=left, 4=right, 5=A, 6=B).
-The worker emits `{type:"networkAction", action:"join"|"invite"|"enter"|"leave", code?}`;
-entry requires six valid symbols, encoded as six UDLRAB characters. Local commands
-are consumed once. `{type:"networkStatus", id, status, code?}` sets status 1-6 and,
-when provided, writes the six-symbol invitation code for display in the cartridge.
-An omitted code preserves typed symbols, allowing retry after error. Consumers
-implement authentication, room matching, code validation and expiry outside this worker.
+`dist/benchmark/index.html?profile=smoke` automatically exercises actual cartridge
+fixtures across 15 platform/mode/player-count combinations. The default full
+profile adds 10-minute sustained runs for GBC four views and NES four pads.
+A same-origin host iframe receives JSON diagnostics over postMessage; the library
+never imports the host's authentication or application code. The page also works
+standalone and offers a report download. A report is evidence, not acceptance:
+see [the performance gate](docs/multiplayer-performance.md). Physical Android/iPhone
+measurements and room/network integration remain separate. Visible response uses
+changed P1 pixels and the next animation-frame paint opportunity: it is a software
+estimate, not a measurement of physical display photons. Inputs during correction
+are synthetic; the offline baseline also accepts the visible hold button (hold
+at least 50ms). Reports distinguish missing memory/latency samples from zero.
 
-Unadvertised cartridges and Game Boy platforms are untouched. Use a fresh zeroed-RAM
-ROM load after the local lobby and before `networkBegin`; lobby duration and local
-identifiers must never become match state. During both forward simulation and replay
-the worker writes identical playing status and clears ABI 2 local code bytes. Only a
-forward `networkStep` can emit leave; replay emits no actions and never acknowledges
-command RAM. Do not write local player ID, RTT, UID or connection data into hashed RAM.
-
-chiptoy's optional `network.h` wraps the mailbox and pad-code editing. Provide an
-offline path when status remains 0; in-game menus initiate join/create/enter/leave.
+`dist/benchmark/world-check.html` separately runs nine logical-world cases in a
+real browser worker: GB/GBC one/two/four views, NES four pads, and two intentionally
+invalid slot-dependent worlds. It compares every native frame's raw snapshot and
+causal digest against uninstrumented execution and checks pixel parity. Normal
+different cameras must pass; invalid simulation must fail at tick 1 with the
+precise `score` field mismatch. No observations are enabled in performance runs.

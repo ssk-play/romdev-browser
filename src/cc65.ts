@@ -5,6 +5,7 @@
 // nes_runtime.c always linked and nes.lib from the cc65 share tree.
 import { runTool, shareFiles, type ToolLoader } from "./wasmtool.ts";
 import type { BuildInput, BuildIssue, BuildResult } from "./toolchain.ts";
+import { verifyContract, checkAssemblyAliases, checkLiteralWrites, contextAddress, checkContextSize, checkPointerAliases } from "./memory-contract.ts";
 
 export type Cc65Tool = "cc65" | "ca65" | "ld65";
 
@@ -35,18 +36,20 @@ export class Cc65Toolchain {
   }
 
   /** cc65: a C file to assembly text. */
-  private async compile(name: string, source: string, headers: Record<string, string>) {
+  private async compile(name: string, source: string, headers: Record<string, string>, records=false) {
     const files: Record<string, Uint8Array | string> = {
       ...(await shareFiles(this.loader, "cc65", "include/", "/share/cc65/include/")),
       [`/work/${name}`]: source,
     };
     for (const [h, text] of Object.entries(headers)) files[`/work/${h}`] = text;
     const out = `/work/${name}.s`;   // foo.c -> foo.c.s: never the name of a .s source
+    let cpp:string|null=null;
+    if(records){const pre=await runTool(this.loader,"cc65",["-t","nes","-E","-I","/share/cc65/include","-I","/work","-o",`/work/${name}.i`,`/work/${name}`],{files,outputs:[`/work/${name}.i`]});cpp=pre.outputs[`/work/${name}.i`];if(pre.code!==0||!cpp)return{asm:null,cpp:null,log:pre.log};}
     const r = await runTool(this.loader, "cc65", ["-t", "nes", ...CC_OPT, ...CC_WARN, "-I", "/share/cc65/include", "-I", "/work", "-o", out, `/work/${name}`], {
       files,
       outputs: [out],
     });
-    return { asm: r.code === 0 ? r.outputs[out] : null, log: `--- cc65 (${name}) ---\n${r.log}` };
+    return { asm: r.code === 0 ? r.outputs[out] : null, cpp, log: `--- cc65 (${name}) ---\n${r.log}` };
   }
 
   /** ca65: assembly text to an object file. `includes` are the other files a `.include` may name. */
@@ -83,25 +86,41 @@ export class Cc65Toolchain {
     const fail = (stage: BuildResult["stage"], log: string, romBytesUsed = 0) =>
       done({ ok: false, stage, rom: null, romBytesUsed, issues: parseCc65Issues(log), log });
     let log = "";
+    const contract=input.memoryContract,assemblies=new Map<string,string>(),preprocessed=new Map<string,string>();
+    const memoryFailure=(e:unknown)=>done({ok:false,stage:"compile",rom:null,romBytesUsed:0,issues:[{file:"memory",line:null,severity:"error",message:String((e as Error).message??e)}],log});
+    if(contract)try{await verifyContract(contract,input.sources);}catch(e){return memoryFailure(e);}
     const headers = { ...rt.headers };
     const asmIncludes: Record<string, string> = {};
     for (const [n, text] of Object.entries(input.sources)) {
       if (n.endsWith(".h")) headers[n] = text;
       if (/\.(s|asm|inc)$/i.test(n)) asmIncludes[n] = text;
     }
+    if(contract)try{
+      for(const [file,assembly]of Object.entries(asmIncludes))if(!contract.engineFiles[file]){
+        checkAssemblyAliases(file,assembly,"nes",[]);checkLiteralWrites(file,assembly,"nes");assemblies.set(file,assembly);
+      }
+    }catch(e){return memoryFailure(e);}
 
     const objects: Record<string, Uint8Array> = {};
     for (const [name, text] of Object.entries(input.sources)) {
       if (name === "nes_runtime.c") continue; // always the bundled runtime
       if (name.endsWith(".c")) {
-        const c = await this.compile(name, text, headers);
+        const c = await this.compile(name, text, headers,!!contract);
         log += c.log;
         if (c.asm == null) return fail("compile", log);
+        if(contract)try{
+          assemblies.set(name,c.asm);checkContextSize(contract,name,c.asm);
+          if(!contract.engineFiles[name]){checkAssemblyAliases(name,c.asm,"nes",[]);checkLiteralWrites(name,c.asm,"nes");if(!c.cpp)throw new Error("missing C allocation source");preprocessed.set(name,c.cpp);checkPointerAliases(name,c.cpp,"nes");}
+        }catch(e){return memoryFailure(e);}
         const a = await this.assemble(`${name}.s`, c.asm, asmIncludes);
         log += a.log;
         if (!a.obj) return fail("assemble", log);
         objects[`${name}.o`] = a.obj;   // foo.c.o, apart from a foo.s source's foo.o
       } else if (/\.(s|asm)$/i.test(name)) {
+        if(contract)try{
+          // Source includes and macro definitions must not hide unverified absolute allocations.
+          assemblies.set(name,text);if(!contract.engineFiles[name])checkLiteralWrites(name,text,"nes");
+        }catch(e){return memoryFailure(e);}
         const a = await this.assemble(name, text, asmIncludes);
         log += a.log;
         if (!a.obj) return fail("assemble", log);
@@ -123,7 +142,7 @@ export class Cc65Toolchain {
     const link = await runTool(
       this.loader,
       "ld65",
-      ["-C", "/work/nes.cfg", ...PLAIN, "-o", "/work/out.nes", "-m", "/work/out.map", "/work/crt0.o", "/work/nes_runtime.o",
+      ["-C", "/work/nes.cfg", ...PLAIN, "-o", "/work/out.nes", "-m", "/work/out.map", ...(contract?["-vm"]:[]), "/work/crt0.o", "/work/nes_runtime.o",
         ...Object.keys(objects).map((n) => `/work/${n}`), "/share/cc65/lib/nes.lib"],
       { files, outputs: ["/work/out.map"], binaries: ["/work/out.nes"] },
     );
@@ -131,6 +150,11 @@ export class Cc65Toolchain {
     const used = prgBytesUsed(link.outputs["/work/out.map"]);
     const rom = link.binaries["/work/out.nes"];
     if (link.code !== 0 || !rom) return fail(/overflow/i.test(link.log) ? "size" : "link", log, used);
+    if(contract)try{
+      const address=contextAddress(link.outputs["/work/out.map"],contract,"nes");
+      for(const [file,assembly]of assemblies)if(!contract.engineFiles[file])checkLiteralWrites(file,assembly,"nes",address,contract.contextSymbol);
+      for(const [file,cpp]of preprocessed)checkPointerAliases(file,cpp,"nes",address);
+    }catch(e){return memoryFailure(e);}
     return done({ ok: true, stage: "done", rom, romBytesUsed: used, issues: parseCc65Issues(log), log });
   }
 }

@@ -1,0 +1,133 @@
+{
+  "kind": "desktop-diagnostic-not-phone-gate",
+  "node": "v25.9.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "sourceCommit": "5813f622995ce525c9c9f57037b025865b9141bd",
+  "dirty": true,
+  "bundleBuild": "834632194d4bacbb1b2a52840144003c46dadede27adc8f0e2b71812d4e96ed1",
+  "wasmSource": {
+    "repo": "https://github.com/ssk-play/romdev.git",
+    "commit": "41a1c15669bca6892c7879d56ca0b44784478d81",
+    "dirty": false
+  },
+  "warmup": 20,
+  "bursts": 200,
+  "depth": 24,
+  "selection": "GBC four views and NES four native players",
+  "includes": "actual restore, native replay, retained snapshots, core-owned digests and scheduler bookkeeping; excludes browser presentation/IPC/network and thermal effects",
+  "cases": [
+    {
+      "platform": "gbc",
+      "mode": "player-views",
+      "slots": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "romSha256": "1cb2a564851b0923559b94b4e6e19f2e839325fa3ca74cdf9adb88a4d1a1f059",
+      "descriptor": "9c54854444cbc5d9b5554ce799f53db1dcf953c8bec44962e0265283e809929d",
+      "coreSchemas": [
+        1195507970,
+        1195507970,
+        1195507970,
+        1195507970
+      ],
+      "nativeFramePeriodMs": 16.742706298828125,
+      "consoles": 4,
+      "window": 24,
+      "snapshotBytesPerConsole": [
+        96877,
+        96877,
+        96877,
+        96877
+      ],
+      "retainedHistoryPeakBytes": 9687700,
+      "wasmHeapBytes": 134217728,
+      "restoreAndDigestMs": {
+        "p50": 1.6247920000005251,
+        "p95": 1.719874999998865,
+        "p99": 1.76995800000077,
+        "max": 1.7785839999996824
+      },
+      "captureAndDigestMs": {
+        "p50": 1.6282500000015716,
+        "p95": 1.7487499999988358,
+        "p99": 2.212875000001077,
+        "max": 2.256291000001511
+      },
+      "forwardFrameWithCaptureMs": {
+        "p50": 2.491177041666939,
+        "p95": 2.5746249583332124,
+        "p99": 2.609869750000295,
+        "max": 2.650335000000041
+      },
+      "synchronousFullCorrectionMs": {
+        "p50": 55.188208999999915,
+        "p95": 57.03429099999994,
+        "p99": 58.45920800000022,
+        "max": 60.71274999999878
+      },
+      "maximumReplaySliceMs": {
+        "p50": 8.451916999998502,
+        "p95": 8.565583999999944,
+        "p99": 8.87829199999942,
+        "max": 8.974749999999403
+      }
+    },
+    {
+      "platform": "nes",
+      "mode": "shared",
+      "slots": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "romSha256": "5037e9d9f133b75dfe27b531da4bb63ad6c024bb48a07f241e23d82f9e7e596d",
+      "descriptor": "15fd50a386a65ad4c025cbf64e45d8baf0ffe63360f7669ae8243d5b77716012",
+      "coreSchemas": [
+        1313145089
+      ],
+      "nativeFramePeriodMs": 16.638983136765876,
+      "consoles": 1,
+      "window": 24,
+      "snapshotBytesPerConsole": [
+        183926
+      ],
+      "retainedHistoryPeakBytes": 4598150,
+      "wasmHeapBytes": 33554432,
+      "restoreAndDigestMs": {
+        "p50": 0.7564999999995052,
+        "p95": 0.7995000000009895,
+        "p99": 0.834499999997206,
+        "max": 0.8443750000005821
+      },
+      "captureAndDigestMs": {
+        "p50": 0.7562500000021828,
+        "p95": 0.8057909999988624,
+        "p99": 0.8335000000006403,
+        "max": 1.004333000004408
+      },
+      "forwardFrameWithCaptureMs": {
+        "p50": 1.221538124998915,
+        "p95": 1.266005166667128,
+        "p99": 1.3009374583337678,
+        "max": 1.317269125000318
+      },
+      "synchronousFullCorrectionMs": {
+        "p50": 27.205541999996058,
+        "p95": 28.291792000003625,
+        "p99": 28.778207999999722,
+        "max": 29.568417000002228
+      },
+      "maximumReplaySliceMs": {
+        "p50": 8.768332999999984,
+        "p95": 9.071624999996857,
+        "p99": 9.17958300000464,
+        "max": 9.413749999999709
+      }
+    }
+  ]
+}
