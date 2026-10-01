@@ -5,6 +5,7 @@
 import { BANK, fixHeader, ihxToBin, ihxUsage, ROM_SIZE, romSizeFor } from "./rom.ts";
 import type { Platform } from "./protocol.ts";
 import { runTool, shareFiles, type ToolLoader } from "./wasmtool.ts";
+import { verifyContract, sdccAllocations, checkAllocations, checkAssemblyAliases, checkLiteralWrites, contextAddress, checkContextSize, checkPointerAliases, type Allocation, type MemoryContract } from "./memory-contract.ts";
 
 export type { EmscriptenFactory, ToolLoader } from "./wasmtool.ts";
 
@@ -39,6 +40,8 @@ export interface BuildInput {
   platform: Platform;
   sources: Record<string, string>; // "main.c" plus optional extra .c/.h
   title?: string;
+  /** Supplied by the host after recognizing its pinned engine ABI, never by game-authored JSON. */
+  memoryContract?: MemoryContract;
 }
 
 const CODE_LOC = 0x0150;
@@ -61,7 +64,7 @@ export class Toolchain {
   }
 
   /** mcpp → sdcc --c1mode → sdasgb. Returns .rel text or a failed RunResult log. */
-  private async compileC(name: string, source: string, headers: Record<string, string>) {
+  private async compileC(name: string, source: string, headers: Record<string, string>, records = false) {
     const files: Record<string, Uint8Array | string> = {
       ...(await this.shareFiles("include/", "/share/sdcc/include/")),
       [`/work/${name}`]: source,
@@ -74,14 +77,15 @@ export class Toolchain {
       { files, outputs: [out] },
     );
     if (cpp.code !== 0 || !cpp.outputs[out]) return { rel: null, log: `--- mcpp (${name}) ---\n${cpp.log}` };
-    const cc = await this.run("sdcc", ["-msm83", "--c1mode", "-o", "/work/main.asm"], {
+    const assembly=`/work/${name.replace(/\.c$/,".asm")}`,debug=`/work/${name.replace(/\.c$/,".adb")}`;
+    const cc = await this.run("sdcc", ["-msm83", ...(records?["--debug"]:[]), "--c1mode", "-o", assembly], {
       stdin: cpp.outputs[out]!,
-      outputs: ["/work/main.asm"],
+      outputs: [assembly, ...(records?[debug]:[])],
     });
     const log = `--- sdcc (${name}) ---\n${cpp.log}${cc.log}`;
-    if (cc.code !== 0 || !cc.outputs["/work/main.asm"]) return { rel: null, log };
-    const asm = await this.assemble(cc.outputs["/work/main.asm"]!);
-    return { rel: asm.rel, log: log + asm.log };
+    if (cc.code !== 0 || !cc.outputs[assembly]) return { rel: null, log };
+    const asm = await this.assemble(cc.outputs[assembly]!);
+    return { rel: asm.rel, log: log + asm.log, asm:cc.outputs[assembly]!, adb:cc.outputs[debug]??null,cpp:cpp.outputs[out]! };
   }
 
   private async assemble(source: string) {
@@ -109,6 +113,9 @@ export class Toolchain {
     const t0 = performance.now();
     const done = (r: Omit<BuildResult, "ms">): BuildResult => ({ ...r, ms: Math.round(performance.now() - t0) });
     let log = "";
+    const contract=input.memoryContract,allocations:Allocation[]=[],assemblies=new Map<string,string>(),preprocessed=new Map<string,string>();
+    const memoryFailure=(e:unknown)=>done({ok:false,stage:"compile",rom:null,romBytesUsed:0,issues:[{file:"memory",line:null,severity:"error",message:String((e as Error).message??e)}],log});
+    if(contract)try{await verifyContract(contract,input.sources);if(Object.keys(input.sources).some(n=>/\.(s|asm)$/i.test(n)))throw new Error("standalone sm83 assembly has no verifiable allocation records");}catch(e){return memoryFailure(e);}
     const headers = { ...rt.headers };
     for (const [n, text] of Object.entries(input.sources)) if (n.endsWith(".h")) headers[n] = text;
 
@@ -116,9 +123,15 @@ export class Toolchain {
     for (const [name, text] of Object.entries(input.sources)) {
       if (!name.endsWith(".c")) continue;
       if (name === "gb_runtime.c") continue; // always the bundled runtime
-      const r = await this.compileC(name, text, headers);
+      const r = await this.compileC(name, text, headers,!!contract);
       log += r.log;
       if (!r.rel) return done({ ok: false, stage: "compile", rom: null, romBytesUsed: 0, issues: parseIssues(log), log });
+      if(contract)try{
+        const a=sdccAllocations(name,r.asm!,r.adb!);allocations.push(...a);assemblies.set(name,r.asm!);
+        checkContextSize(contract,name,r.asm!,r.adb);
+        if(!contract.engineFiles[name]){checkAssemblyAliases(name,r.asm!,input.platform,a);checkLiteralWrites(name,r.asm!,input.platform);preprocessed.set(name,r.cpp!);checkPointerAliases(name,r.cpp!,input.platform);}
+        checkAllocations(input.platform,a,contract);
+      }catch(e){return memoryFailure(e);}
       objects[name.replace(/\.c$/, ".rel")] = r.rel;
     }
     if (Object.keys(objects).length === 0) {
@@ -159,7 +172,7 @@ export class Toolchain {
         ...Object.keys(objects).map((n) => `/work/${n}`),
         "-l", "sm83.lib", "-e",
       ],
-      { files, outputs: ["/work/out.ihx"] },
+      { files, outputs: ["/work/out.ihx",...(contract?["/work/out.map"]:[])] },
     );
     log += `--- sdld ---\n${link.log}`;
     const ihx = link.outputs["/work/out.ihx"];
@@ -167,6 +180,11 @@ export class Toolchain {
     if (link.code !== 0 || !ihx || linkIssues.some((i) => i.severity === "error")) {
       return done({ ok: false, stage: "link", rom: null, romBytesUsed: 0, issues: parseIssues(log), log });
     }
+    if(contract)try{
+      const address=contextAddress(link.outputs["/work/out.map"],contract,input.platform);checkAllocations(input.platform,allocations,contract,address);
+      for(const [file,asm]of assemblies)if(!contract.engineFiles[file])checkLiteralWrites(file,asm,input.platform,address,contract.contextSymbol);
+      for(const [file,cpp]of preprocessed)checkPointerAliases(file,cpp,input.platform,address);
+    }catch(e){return memoryFailure(e);}
     const usage = ihxUsage(ihx);
     const used = usage.fixed + Object.values(usage.banks).reduce((a, b) => a + b, 0);
     const over = [

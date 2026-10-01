@@ -4,6 +4,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { root, template } from "./helpers.mjs";
+import { fixture,config,frame,bundle } from "./bundle-helpers.mjs";
+import {BundleReplay}from"../src/bundle-replay.ts";
+import {boundaryDigest}from"../src/bundle-checkpoint.ts";
 
 test("server builds and runs a GBC game over HTTP", async (t) => {
   const port = 18000 + Math.floor(Math.random() * 1000);
@@ -131,4 +134,22 @@ void main(void) {
   const other = await post("/build", { platform: "gbc", sources: { "main.c": game(false) } });
   const o = await post("/run", { platform: "gbc", rom: other.rom, frames: 90, input, every: 45, memory: [{ offset: 0x1000, length: 7 }] });
   assert.ok(o.rows.every((x) => x.memory[0] === "00000000000000"), JSON.stringify(o.rows));   // never written
+});
+
+test("headless bundle HTTP runs isolated canonical consoles and rejects invalid traces before boot",async t=>{
+  const port=20000+Math.floor(Math.random()*1000),proc=spawn(process.execPath,[path.join(root,"dist","server.mjs")],{env:{...process.env,PORT:String(port)},stdio:"pipe"});t.after(()=>proc.kill());
+  await new Promise((ok,fail)=>{proc.stdout.on("data",ok);proc.on("exit",fail);});
+  const post=async body=>{const r=await fetch(`http://127.0.0.1:${port}/bundle/run`,{method:"POST",body:JSON.stringify(body)});return{status:r.status,body:await r.json()};};
+  for(const p of ["gb","gbc","nes"]){
+    const c=config(p,p==="nes"?"shared":"player-views",[0,1,2,3]),rom=await fixture(p),inputs=Array.from({length:16},(_,f)=>frame(c,f,[1,2,16,128]));
+    const req={config:c,rom:Buffer.from(rom).toString("base64"),frames:16,input:inputs,shots:[16],every:8,memory:[{region:"system_ram",offset:p==="nes"?0x410:0,length:4}]};
+    const result=await post(req);assert.equal(result.status,200,JSON.stringify(result.body));const r=result.body;
+    assert.equal(r.consoleSlots.length,p==="nes"?1:4);assert.deepEqual(r.rows.map(x=>x.frame),[8,16]);
+    assert.equal(Buffer.from(r.shots[0].consoles[0].png,"base64").subarray(1,4).toString(),"PNG");
+    if(p!=="nes")assert.notEqual(r.shots[0].consoles[0].png,r.shots[0].consoles[1].png);
+    else assert.equal(r.rows[1].consoles[0].memory[0],"01021080");
+    // Independent in-process worker adapter must agree with the separate HTTP program.
+    const b=await bundle(c,r.build);try{const replay=new BundleReplay(b);for(const f of inputs){replay.enqueue(f);while(!replay.pump(8,1).complete){}replay.confirm(f.frame);}assert.equal(await boundaryDigest(b.descriptorHash,replay.checkpoint(15),{eventSeq:-1,chainHash:"0".repeat(16)}),r.digest);}finally{b.dispose();}
+    for(const bad of [{...req,frames:3601},{...req,input:[inputs[1]]},{...req,memory:[{region:"save_ram",offset:0x100000,length:1}]}])assert.equal((await post(bad)).status,400);
+  }
 });

@@ -7,6 +7,7 @@
 import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, copyFileSync, rmSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { build } from "esbuild";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -93,8 +94,15 @@ const nodeOnly = {
     b.onLoad({ filter: /.*/, namespace: "node-only" }, () => ({ contents: 'throw new Error("node-only module");', loader: "js" }));
   },
 };
+const bundleHash = createHash("sha256");
+for (const dir of [path.join(root, "src"), pkgDir("romdev-core-host")]) {
+  for (const name of readdirSync(dir).filter(n => /\.(ts|js)$/.test(n)).sort()) bundleHash.update(name).update(readFileSync(path.join(dir, name)));
+}
+for (const name of ["gambatte.wasm", "fceumm.wasm", "gambatte.mjs", "fceumm.mjs"]) bundleHash.update(readFileSync(path.join(wasm, name)));
+for (const name of ["scripts/build.mjs", "package.json", "package-lock.json"]) bundleHash.update(name).update(readFileSync(path.join(root, name)));
+const bundleBuild = bundleHash.digest("hex");
 await build({
-  entryPoints: { "compiler.worker": "src/compiler.worker.ts", "emulator.worker": "src/emulator.worker.ts" },
+  entryPoints: { "compiler.worker": "src/compiler.worker.ts", "emulator.worker": "src/emulator.worker.ts", "bundle.worker": "src/bundle.worker.ts", benchmark: "src/benchmark.ts" },
   outdir: dist,
   bundle: true,
   format: "esm",
@@ -105,7 +113,7 @@ await build({
   sourcemap: true,
   legalComments: "eof",
   loader: { ".c": "text", ".h": "text", ".s": "text", ".cfg": "text" },
-  define: { __ASSET_SIZES__: JSON.stringify(sizes) },
+  define: { __ASSET_SIZES__: JSON.stringify(sizes), __BUNDLE_BUILD__: JSON.stringify(bundleBuild) },
   plugins: [nodeOnly],
   logLevel: "warning",
 });
@@ -130,7 +138,7 @@ await build({
   sourcemap: true,
   legalComments: "eof",
   loader: { ".c": "text", ".h": "text", ".s": "text", ".cfg": "text" },
-  define: { __VERSION__: JSON.stringify(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version) },
+  define: { __VERSION__: JSON.stringify(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version), __BUNDLE_BUILD__:JSON.stringify(bundleBuild) },
   plugins: [serverOnly],
   logLevel: "warning",
 });
@@ -150,6 +158,7 @@ const version = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")
 const manifest = {
   name: "romdev-browser",
   version,
+  bundleBuild,
   license: "GPL-2.0-only",
   source: "https://github.com/ssk-play/romdev-browser",
   components: {
@@ -167,3 +176,4 @@ const manifest = {
 writeFileSync(path.join(dist, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 for (const f of ["LICENSE", "NOTICE.md"]) copyFileSync(path.join(root, f), path.join(dist, f));
 console.log(`romdev-browser ${version}: dist/ built`, Object.keys(sizes).length, "wasm assets");
+await import("./build-benchmark.mjs");
