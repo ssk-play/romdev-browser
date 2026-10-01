@@ -11,8 +11,16 @@ export type BundleRequest =
   | { type: "pump"; id: number; budgetMs?: number; maxOperations?: number }
   | { type: "view"; id: number; slot: number }
   | { type: "probe"; id: number; region: PixelRegion | null }
+  | { type: "digest"; id: number; afterFrame: number; position: StreamPosition }
   | { type: "checkpoint"; id: number; afterFrame: number; position: StreamPosition }
-  | { type: "restore"; id: number; payload: Uint8Array; payloadHash: string; bundleDigest: string; position: StreamPosition }
+  | {
+      type: "restore";
+      id: number;
+      payload: Uint8Array;
+      payloadHash: string;
+      bundleDigest: string;
+      position: StreamPosition;
+    }
   | { type: "inspect"; id: number; region: string; offset: number; length: number }
   | { type: "dispose"; id: number };
 export type BundleEvent =

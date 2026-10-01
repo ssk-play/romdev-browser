@@ -31,7 +31,7 @@ for(const platform of ['gb','gbc','nes'])for(const mode of platform==='nes'?['sh
 });
 test('ABI validates the complete context interval and never overwrites NES native pad mirrors',()=>{
  let ram=new Uint8Array(0x8000);const h={readMemory:(_r,o,n)=>ram.slice(o,o+n),writeMemory:(_r,o,b)=>ram.set(b,o)};
- for(const [platform,at,address]of [['gb',0x10f0,0xcff0],['gbc',0x10f0,0xd000],['nes',0x3f0,0x3e0],['nes',0x3f0,0x6000]]){ram.set([77,80,1,8,address&255,address>>8,32,1],at);assert.throws(()=>discoverContext(h,platform),/context/);}
+ for(const [platform,at,address]of [['gb',0x10f0,0xcff0],['gbc',0x10f0,0xd000],['nes',0x3f0,0x3e0],['nes',0x3f0,0x6000],['nes',0x3f0,0x0000],['nes',0x3f0,0x0100],['nes',0x3f0,0x02e0]]){ram.set([77,80,1,8,address&255,address>>8,32,1],at);assert.throws(()=>discoverContext(h,platform),/context/);}
  ram.set([77,80,1,8,0,4,32,1],0x3f0);ram.set([9,8,7,6],0x410);writeContext(h,discoverContext(h,'nes'),config('nes'),255,frame(config('nes'),0,[1,2,4,8]));assert.deepEqual(Array.from(ram.slice(0x410,0x414)),[9,8,7,6]);
 });
 test('sliced/coalesced replay reports completion CPU separately from elapsed wait and resets for the next correction',async t=>{

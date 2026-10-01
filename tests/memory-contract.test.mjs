@@ -34,3 +34,48 @@ test('NES folded 16-bit writes crossing the header fail; ordinary boundary and o
  const alias=await cc65.build(input('nes','void main(void){}',{'aliases.s':'.segment "CODE"\n.org $03ef\nfoo: .res 2\n'}),NES_RUNTIME);assert.equal(alias.ok,false);assert.match(alias.issues[0].message,/absolute/);
  const include=await cc65.build(input('nes','void main(void){}',{'helper.s':'.segment "CODE"\n.include "bad.inc"\n','bad.inc':'sta $03f0\n'}),NES_RUNTIME);assert.equal(include.ok,false);assert.match(include.issues[0].message,/reserved/);
 });
+
+for (const platform of ['gb', 'gbc']) test(`${platform}: real SDCC immediate and HL stores cannot write the context or header`, async () => {
+  for (const body of [
+    'mp_context[16]=3;',
+    'mp_context[3]=7;',
+    '__asm__("ld (#0xd0f0), a");',
+  ]) {
+    const main = `extern unsigned char mp_context[32];\nvoid main(void){${body}}`;
+    const result = await sdcc.build(input(platform, main), runtimeFor(platform));
+    assert.equal(result.ok, false, `${body}: ${result.log}`);
+    assert.match(result.issues[0].message, /reserved/);
+  }
+  const good = await sdcc.build(input(platform, 'void main(void){__asm__("ld (#0xd0ef), a");}'), runtimeFor(platform));
+  assert.equal(good.ok, true, good.log + JSON.stringify(good.issues));
+});
+
+test('ca65 addressing prefixes and straight-line SDCC pointer updates preserve address ownership', async () => {
+  for (const instruction of ['sta a:$03f0', 'sta z:$03f0', 'sta a:_mp_context+16']) {
+    assert.throws(() => checkLiteralWrites('main.c', instruction, 'nes', 0x6100, 'mp_context'), /reserved/);
+  }
+  const bad = await cc65.build(input('nes', 'void main(void){__asm__("sta a:$03f0");}'), NES_RUNTIME);
+  assert.equal(bad.ok, false, bad.log);
+  assert.match(bad.issues[0].message, /reserved/);
+  for (const assembly of [
+    'ld hl, #_mp_context + 16\nld (hl), #0x03',
+    'ld hl, #0xd0ef\ninc hl\nld (hl), #1',
+    'ld (#0xd0ef), sp',
+  ]) assert.throws(() => checkLiteralWrites('main.c', assembly, 'gbc', 0xc200, 'mp_context'), /reserved/);
+  checkLiteralWrites('main.c', 'ld hl, #0xd0ef\nld (hl), #1', 'gbc', 0xc200, 'mp_context');
+  checkLiteralWrites('main.c', 'ld hl, #0xd0f0\nld h, a\nld (hl), a', 'gbc', 0xc200, 'mp_context');
+});
+
+const { contextLocation } = await import('../src/multiplayer-abi.ts');
+test('compiler and runtime share the same complete context interval rule', () => {
+  for (const [platform, addresses] of [
+    ['nes', [0, 0x100, 0x2e0, 0x3f0, 0x400, 0x7e0, 0x7e1, 0x6000, 0x6100, 0x7fe0, 0x7fe1]],
+    ['gbc', [0xbfff, 0xc000, 0xcfe0, 0xcfe1, 0xd000]],
+  ]) {
+    for (const address of addresses) {
+      const map = `_mp_context ${address.toString(16).padStart(6, '0')} RLA`;
+      if (contextLocation(platform, address)) assert.equal(contextAddress(map, contract, platform), address);
+      else assert.throws(() => contextAddress(map, contract, platform), /ordinary writable RAM/);
+    }
+  }
+});

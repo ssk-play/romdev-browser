@@ -58,3 +58,26 @@ or retires failed bundles as specified by the transactional restore contract.
 Client HTTP compression/retention and upload scheduling are M4c client work.
 The M2 worker currently emits/accepts bounded uncompressed CTMP; it does not open
 HTTP connections or perform room certification.
+
+State checks can use the `digest` worker request with `afterFrame` and `position`.
+It returns `bundleDigest`, `nextFrame`, `eventSeq` and `chainHash` from the same
+corrected, confirmed, retained boundary as `checkpoint`, without copying the
+native snapshot buffers or encoding a payload. Historical boundaries must still
+be retained; digest-only is not permission to certify uncorrected predictions.
+
+The descriptor is a fixed-order JSON tuple: domain `chiptoy-descriptor/1`, ABI,
+platform, screen mode, sorted occupied slots, capacity, epoch, seed, spike policy,
+window, RTC epoch, build identity, ROM hash and ordered native schemas. Unknown
+config keys are rejected. Object property insertion order never enters its hash.
+
+Restoring a checkpoint cannot redraw the core's framebuffer. The restore reply
+and pump results expose `presentationStale: true` while holding the last complete
+image. The next completely executed bundle frame clears it. The held image is not
+claimed to depict the restored checkpoint; clients can label recovery accordingly.
+
+Identical recent confirmed input repeats are ignored; conflicting recent repeats
+are rejected. One frozen window of confirmed vectors is retained in addition to
+unconfirmed inputs. Older repeats are ignored without recreating old vectors or
+altering execution; room authority validates their original canonical content.
+A partial bundle that was never presented is rerun as a fresh frame for audio;
+only previously completed historical frames have their replay audio discarded.
