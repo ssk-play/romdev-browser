@@ -6,7 +6,7 @@ import { discoverContext,writeContext } from '../src/multiplayer-abi.ts';
 import { bundle,config,frame } from './bundle-helpers.mjs';
 
 const drain=r=>{let guard=0;while(!r.pump(8,1).complete)assert.ok(++guard<1000);};
-for(const platform of ['gb','gbc','nes'])for(const mode of platform==='nes'?['shared']:['shared','player-views'])for(const slots of [[0],[0,2],[0,1,2,3]])test(`${platform} ${mode} ${slots.length}: bootstrap, delayed/coalesced correction, whole-bundle checkpoint`,async t=>{
+for(const platform of ['gb','gbc','nes'])for(const mode of platform==='nes'?['shared']:['shared','player-views'])for(const slots of [[0],[0,2],[0,1,2],[0,1,2,3]])test(`${platform} ${mode} ${slots.length}: bootstrap, delayed/coalesced correction, whole-bundle checkpoint`,async t=>{
  const c=config(platform,mode,slots),a=await bundle(c),b=await bundle(c);t.after(()=>a.dispose());t.after(()=>b.dispose());
  assert.equal(a.consoles.length,mode==='shared'?1:slots.length);
  for(const v of a.consoles){const h=v.host;assert.equal(h.readMemory('system_ram',platform==='nes'?0x312:0x10,1)[0],0);assert.equal(h.readMemory(v.context.region,v.context.offset+3,1)[0],mode==='shared'?255:v.slot);}
