@@ -45,8 +45,9 @@ export interface SliceResult {
   complete: boolean;
   workMs: number;
   correctionAgeMs: number;
-  /** Emitted once when a coalesced correction completes; includes all slices and time between them. */
-  completedCorrection: { workMs: number; ageMs: number } | null;
+  /** Emitted once when a coalesced correction completes; includes all slices and time between them. `frames` is how
+   *  many frames it re-ran: from the earliest corrected frame to where the bundle had got (each console). */
+  completedCorrection: { workMs: number; ageMs: number; frames: number } | null;
   nativeStepMs: number;
   captureMs: number;
   restoreMs: number;

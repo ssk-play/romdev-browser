@@ -37,6 +37,7 @@ export class BundleReplay {
   private restoring: { boundary: Boundary; index: number } | null = null;
   private replayEnd = 0;
   private correctionStarted: number | null = null;
+  private correctionFrom = Infinity;   // the earliest frame this (coalesced) correction replays from
   private correctionWork = 0;
   private shown: Pixels[];
   presentationStale = false;
@@ -116,6 +117,7 @@ export class BundleReplay {
     if (first < this.nextFrame || (first === this.nextFrame && this.partial)) {
       this.dirty = Math.min(this.dirty ?? Infinity, first);
       this.replayEnd = Math.max(this.replayEnd, this.nextFrame);
+      this.correctionFrom = Math.min(this.correctionFrom, first);
       if (this.correctionStarted === null) {
         this.correctionStarted = this.now();
         this.correctionWork = 0;
@@ -196,19 +198,22 @@ export class BundleReplay {
           if (!replay) this.audio.push(...p.audio[this.view]);
           this.partial = null;
           let completedStart: number | null = null;
+          let completedFrames = 0;
           if (!replay || this.nextFrame >= this.replayEnd) {
             this.shown = this.bundle.pixels();
             this.presentationStale = false;
             if (this.correctionStarted !== null && this.nextFrame >= this.replayEnd) {
               completedStart = this.correctionStarted;
+              completedFrames = this.replayEnd - this.correctionFrom;
               this.correctionStarted = null;
+              this.correctionFrom = Infinity;
             }
           }
           this.prune();
           if (completedStart !== null) {
             const end = this.now();
             this.correctionWork += end - start;
-            completedCorrection = { workMs: this.correctionWork, ageMs: end - completedStart };
+            completedCorrection = { workMs: this.correctionWork, ageMs: end - completedStart, frames: completedFrames };
           }
         }
       }
@@ -303,6 +308,7 @@ export class BundleReplay {
     this.partial = null;
     this.restoring = null;
     this.correctionStarted = null;
+    this.correctionFrom = Infinity;
     this.replayEnd = 0;
     this.audio = [];
     this.presentationStale = true;

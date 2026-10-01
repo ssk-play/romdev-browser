@@ -47,11 +47,11 @@ test('sliced/coalesced replay reports completion CPU separately from elapsed wai
  clock+=20; // Scheduling/background work belongs to elapsed latency, not replay CPU.
  r.correct([frame(c,2,[2,0,0,0])],3);
  let guard=0;do{slice=r.pump(8,1);assert.ok(++guard<20);}while(!slice.complete);
- assert.deepEqual(slice.completedCorrection,{workMs:11,ageMs:31});assert.equal(slice.correctionAgeMs,0);
+ assert.deepEqual(slice.completedCorrection,{workMs:11,ageMs:31,frames:4});assert.equal(slice.correctionAgeMs,0);
  assert.equal(r.pump(8,1).completedCorrection,null); // Report completion once.
  r.enqueue(frame(c,4));drain(r);r.correct([frame(c,4,[1,0,0,0])],4);
  do{slice=r.pump(8,1);}while(!slice.complete);
- assert.deepEqual(slice.completedCorrection,{workMs:5,ageMs:5});
+ assert.deepEqual(slice.completedCorrection,{workMs:5,ageMs:5,frames:1});
  assert.deepEqual(r.drainAudio(),[]);
 });
 test('failed multi-console restore rolls back every console and keeps the presented bundle intact',async t=>{
@@ -74,4 +74,18 @@ test('a restore whose undo fails retires every core and cannot certify or advanc
  assert.throws(()=>r.restoreCheckpoint(bad),/retired/);assert.equal(b.retired,true);
  assert.throws(()=>r.checkpoint(3),/retired/);assert.throws(()=>r.enqueue(frame(c,4)),/retired/);
  assert.throws(()=>r.selectView(2),/retired/);assert.ok(b.consoles.every(v=>v.host.mod===null));
+});
+test('a finished correction reports the frames it re-ran: from the earliest corrected frame to where the bundle had got',async t=>{
+ const c=config('nes','shared',[0]),b=await bundle(c);t.after(()=>b.dispose());const r=new BundleReplay(b);
+ for(let f=0;f<16;f++){r.enqueue(frame(c,f));drain(r);}
+ // one frame behind the bundle's head: one frame re-run, whatever the caller last heard
+ r.correct([frame(c,15,[1,0,0,0])],-1);
+ let slice;do{slice=r.pump(8,128);}while(!slice.complete);
+ assert.equal(slice.completedCorrection.frames,1);
+ // rewound to 5, then an earlier correction (0) merges into the same replay: all 16 frames re-run, reported once
+ r.correct([frame(c,5,[2,0,0,0])],-1);
+ slice=r.pump(8,1);assert.equal(slice.completedCorrection,null);
+ r.correct([frame(c,0,[4,0,0,0])],-1);
+ do{slice=r.pump(8,128);}while(!slice.complete);
+ assert.equal(slice.completedCorrection.frames,16);
 });
