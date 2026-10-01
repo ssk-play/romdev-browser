@@ -1,7 +1,7 @@
 // Actual cartridge fixture. All four actors share one world; only the camera reads my_slot.
 // The MP header is in physical bank 1, the context in unbanked WRAM, while gameplay selects bank 2.
 import { fixHeader } from '../../../src/rom.ts';
-export function gbMultiplayer(cgb) {
+export function gbMultiplayer(cgb, divergentWorld = false) {
  const rom=new Uint8Array(32768), labels=new Map(), fixups=[];let pc=0x150;
  const emit=(...b)=>{rom.set(b,pc);pc+=b.length;};
  const label=n=>labels.set(n,pc);
@@ -34,10 +34,13 @@ export function gbMultiplayer(cgb) {
  for(let i=0;i<4;i++){
   emit(0xfa,0x10+i,0xc4,0xe6,1);jump(0xca,'left'+i);emit(0x21,i,0xc0,0x34);
   label('left'+i);emit(0xfa,0x10+i,0xc4,0xe6,2);jump(0xca,'action'+i);emit(0x21,i,0xc0,0x35);
-  label('action'+i);emit(0xfa,0x10+i,0xc4,0xe6,16);jump(0xca,'draw'+i);emit(0x21,8,0xc0,0x34);
-  label('draw'+i);emit(0xfa,i,0xc0,0xea,1+i*4,0xfe);
+  label('action'+i);emit(0xfa,0x10+i,0xc4,0xe6,16);jump(0xca,'nextActor'+i);emit(0x21,8,0xc0,0x34);
+  label('nextActor'+i);
  }
- emit(0x21,4,0xc0,0x34); // world tick, independent of view
+ if(divergentWorld)emit(0xfa,3,0xc4,0x21,8,0xc0,0x86,0x77); // Forbidden simulation branch by my_slot.
+ for(let i=0;i<4;i++){emit(0x21,4+i,0xc0,0x34);if(i<3)jump(0xc2,'worldPublished');}
+ label('worldPublished');store(0xc009,0xa5); // World is complete, BEFORE every view write.
+ for(let i=0;i<4;i++)emit(0xfa,i,0xc0,0xea,1+i*4,0xfe);
  emit(0xfa,3,0xc4,0xfe,0xff);jump(0xc2,'player');emit(0xaf);
  label('player');emit(0x4f,0x87,0x81,0xe0,0x43); // fixed camera = slot × 3; distinct even when actors coincide
  label('end');emit(0xf0,0x44,0xfe,144);jump(0xca,'end');jump(0xc3,'frame');

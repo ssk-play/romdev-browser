@@ -15,7 +15,7 @@ export async function fixture(platform) {
 }
 export const config=(platform,mode='shared',slots=[0,1,2,3])=>({platform,mode,slots,capacity:4,epoch:7,seed:12,policy:'replace',window:24,rtcEpochSeconds:0});
 export const frame=(c,f,masks=[0,0,0,0])=>({frame:f,masks:masks.map((m,i)=>c.slots.includes(i)?m:0),states:[0,1,2,3].map(i=>c.slots.includes(i)?1:0)});
-export async function bundle(c,build='test-m1-7b412f74') {
+export async function bundle(c,build='test-m1-7b412f74',rom) {
  const core=c.platform==='nes'?'fceumm':'gambatte',loader=nodeLoader(),factory=await loader.factory(core),wasmBinary=new Uint8Array(readFileSync(new URL(`../dist/wasm/${core}.wasm`,import.meta.url)));
- return ConsoleBundle.boot(c,await fixture(c.platform),build,async()=>{const h=new LibretroHost();await h.loadCore({factory,wasmBinary,io:false});return h;});
+ return ConsoleBundle.boot(c,rom??await fixture(c.platform),build,async()=>{const h=new LibretroHost();await h.loadCore({factory,wasmBinary,io:false});return h;});
 }

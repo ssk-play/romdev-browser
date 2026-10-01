@@ -102,7 +102,7 @@ for (const name of ["gambatte.wasm", "fceumm.wasm", "gambatte.mjs", "fceumm.mjs"
 for (const name of ["scripts/build.mjs", "package.json", "package-lock.json"]) bundleHash.update(name).update(readFileSync(path.join(root, name)));
 const bundleBuild = bundleHash.digest("hex");
 await build({
-  entryPoints: { "compiler.worker": "src/compiler.worker.ts", "emulator.worker": "src/emulator.worker.ts", "bundle.worker": "src/bundle.worker.ts", benchmark: "src/benchmark.ts" },
+  entryPoints: { "compiler.worker": "src/compiler.worker.ts", "emulator.worker": "src/emulator.worker.ts", "bundle.worker": "src/bundle.worker.ts", benchmark: "src/benchmark.ts", "world-check.worker": "src/world-check.worker.ts", "world-check": "src/world-check.ts" },
   outdir: dist,
   bundle: true,
   format: "esm",

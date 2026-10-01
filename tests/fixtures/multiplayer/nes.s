@@ -202,6 +202,17 @@ reset:
  inx
  cpx #4
  bne @move
+ ; Same explicit engine world-publication boundary as GB/GBC, before view writes.
+ inc $0600
+ bne @worldPublished
+ inc $0601
+ bne @worldPublished
+ inc $0602
+ bne @worldPublished
+ inc $0603
+@worldPublished:
+ lda #$a5
+ sta $0604
  ldx #0
  ldy #0
 @draw:

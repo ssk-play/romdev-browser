@@ -18,5 +18,8 @@ declare module "romdev-core-host" {
     reset(): void;
     dispose(): void;
     stateDigest(): { schema: number; bytes: Uint8Array };
+    startWorldObservation(request: { trigger: number; value?: number; tick: { region: string; offset: number; length: number }; fields: { region: string; offset: number; length: number }[] }): void;
+    drainWorldObservation(): { events: { tick: number; pc: number; bytes: Uint8Array }[]; total: number; truncated: boolean };
+    stopWorldObservation(): void;
   }
 }

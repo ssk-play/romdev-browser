@@ -135,7 +135,17 @@ bytes each. Rows/shots contain an ordered `consoles` array with canonical slot
 and per-console memory/PNG. Final `digest` uses an offline empty stream position,
 not a room certificate. All cores are disposed after each request. Raw memory
 samples at native boundaries are **not** M3's pre-render logical-world equality
-check; that requires the new engine's explicit world-update observation contract.
+check. Optional `world {trigger, tick, fields, value?}` binds the lower core's
+nonintrusive observation hook. The engine writes an unbanked LE32 tick and then
+marker `0xa5` after world update and before drawing; physical RAM fields are copied
+at that write. The diagnostic compares matching logical ticks, rejects repeated/
+missing publications, overflow and more than eight unmatched ticks, and reports
+trailing unmatched ticks separately. Differences identify tick, canonical slots,
+field, physical offset and both values. Bounds are 32 named fields and 1024 bytes;
+engine context/header/tick overlaps are rejected. This low-level binding is trusted
+host input: M3 must derive publisher symbols from the pinned engine, validate the
+author's world schema, and preserve publication in shared/solo execution.
+It does not synchronize consoles whose game logic consumes different inputs.
 
 
 ### Deterministic console bundles (1.0.0)
@@ -196,3 +206,10 @@ changed P1 pixels and the next animation-frame paint opportunity: it is a softwa
 estimate, not a measurement of physical display photons. Inputs during correction
 are synthetic; the offline baseline also accepts the visible hold button (hold
 at least 50ms). Reports distinguish missing memory/latency samples from zero.
+
+`dist/benchmark/world-check.html` separately runs nine logical-world cases in a
+real browser worker: GB/GBC one/two/four views, NES four pads, and two intentionally
+invalid slot-dependent worlds. It compares every native frame's raw snapshot and
+causal digest against uninstrumented execution and checks pixel parity. Normal
+different cameras must pass; invalid simulation must fail at tick 1 with the
+precise `score` field mismatch. No observations are enabled in performance runs.

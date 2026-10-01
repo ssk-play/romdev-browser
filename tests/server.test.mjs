@@ -7,6 +7,7 @@ import { root, template } from "./helpers.mjs";
 import { fixture,config,frame,bundle } from "./bundle-helpers.mjs";
 import {BundleReplay}from"../src/bundle-replay.ts";
 import {boundaryDigest}from"../src/bundle-checkpoint.ts";
+import {gbMultiplayer}from"./fixtures/multiplayer/gb.mjs";
 
 test("server builds and runs a GBC game over HTTP", async (t) => {
   const port = 18000 + Math.floor(Math.random() * 1000);
@@ -148,6 +149,12 @@ test("headless bundle HTTP runs isolated canonical consoles and rejects invalid 
     assert.equal(Buffer.from(r.shots[0].consoles[0].png,"base64").subarray(1,4).toString(),"PNG");
     if(p!=="nes")assert.notEqual(r.shots[0].consoles[0].png,r.shots[0].consoles[1].png);
     else assert.equal(r.rows[1].consoles[0].memory[0],"01021080");
+    const world={trigger:p==='nes'?0x604:0xc009,tick:{region:'system_ram',offset:p==='nes'?0x600:4,length:4},fields:[{name:'positions',region:'system_ram',offset:p==='nes'?0x308:0,length:4},...(p==='nes'?[]:[{name:'score',region:'system_ram',offset:8,length:1}])]};
+    const checked=await post({...req,world});assert.equal(checked.status,200,JSON.stringify(checked.body));assert.ok(checked.body.world.checkedTicks>8);assert.equal(checked.body.digest,r.digest);assert.deepEqual(checked.body.shots,r.shots);assert.deepEqual(checked.body.rows,r.rows);
+    if(p!=='nes'){
+      const bad=await post({...req,config:{...c,slots:[0,2]},input:[],world,rom:Buffer.from(gbMultiplayer(p==='gbc',true)).toString('base64')});
+      assert.equal(bad.status,400);assert.match(bad.body.error,/world mismatch at tick 1.*slots 0\/2 field score/);
+    }
     // Independent in-process worker adapter must agree with the separate HTTP program.
     const b=await bundle(c,r.build);try{const replay=new BundleReplay(b);for(const f of inputs){replay.enqueue(f);while(!replay.pump(8,1).complete){}replay.confirm(f.frame);}assert.equal(await boundaryDigest(b.descriptorHash,replay.checkpoint(15),{eventSeq:-1,chainHash:"0".repeat(16)}),r.digest);}finally{b.dispose();}
     for(const bad of [{...req,frames:3601},{...req,input:[inputs[1]]},{...req,memory:[{region:"save_ram",offset:0x100000,length:1}]}])assert.equal((await post(bad)).status,400);
