@@ -161,7 +161,8 @@ Clients own those decisions and communicate only through postMessage.
 - `init {canvas}` transfers an OffscreenCanvas; `load {rom, config}` starts an epoch
   with standard zero cartridge RAM, fixed deterministic RTC and the new MP ABI.
   `config` fixes platform, shared/player-views mode, occupied slots, capacity,
-  epoch, seed, spike policy, prediction window (1–24) and RTC epoch seconds.
+  epoch, seed, spike policy, prediction window (1–24) and RTC epoch seconds. Unknown
+  config keys are rejected and descriptor hashing uses a fixed-order tuple.
 - Shared mode runs one console. GB/GBC player-views runs the same ordered N consoles
   on every client, with each console's ROM slot fixed for its lifetime. Two players
   use two consoles; occupied slots may have gaps. NES always runs one console with
@@ -176,11 +177,14 @@ Clients own those decisions and communicate only through postMessage.
   moves the watermark without changing masks. Partial consoles stay hidden;
   historical replay audio is discarded. `view {slot}` selects output without
   changing any console's deterministic state (`0xff` selects the shared view).
+- `digest {afterFrame, position}` returns agreement metadata without copying native
+  snapshot buffers; the boundary must still be corrected, confirmed and retained.
 - `checkpoint {afterFrame, position}` returns a bounded full bundle with descriptor,
   core schemas, ordered causal digests and stream position. Byte integrity and
   agreement digest are separate. `restore` validates the envelope before restoring
   every canonical console. Room certification and checkpoint upload are the host's
-  responsibility, outside the input connection.
+  responsibility, outside the input connection. After restore, the last complete
+  image is held and `presentationStale` remains true until a complete new frame.
 - `inspect` permits bounded RAM reads only at completed, corrected boundaries.
   Optional diagnostic `probe {region}` checksums at most 4096 selected-view pixels
   and returns `pixelHash` with frame/pump replies; null disables it. This checksum
