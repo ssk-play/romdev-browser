@@ -23,6 +23,8 @@ test('descriptor is canonical for key/slot order, rejects unknown keys and binds
   assert.deepEqual(a.config.slots, [0, 2]);
   const ba = a.boundary(0), bb = b.boundary(0);
   assert.equal(await boundaryDigest(a.descriptorHash, ba, position), await boundaryDigest(b.descriptorHash, bb, position));
+  assert.doesNotThrow(() => validateConfig({ ...c, window: 60 }));
+  for (const window of [0, 61]) assert.throws(() => validateConfig({ ...c, window }), /frozen bounds/);
   for (const invalid of [null, [], { ...c, roomId: 'extra' }, { ...c, abi: 1 }]) {
     assert.throws(() => validateConfig(invalid), /configuration/);
   }

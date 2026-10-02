@@ -24,6 +24,11 @@ For a window of 24 frames, retain at most 25 completed bundle boundaries.
 | GBC four views | 96,877 | 4 | 9,687,700 B (9.688 MB) |
 | NES four players | 183,926 | 1 | 4,598,150 B (4.598 MB) |
 
+The window may be up to 60 frames (`MAX_WINDOW`, raised from 24 on 2026-10-02 so that a slow room connection
+does not stall matches whose hints arrive over fast paths). At 60 a bundle keeps up to 61 boundaries: about 2.44
+times the figures above. Examples: GB shared 4.41 MB, GBC shared 5.91 MB, GBC four views 23.63 MB and NES four players
+11.22 MB. A host that does not need the full second should freeze a shorter window.
+
 MB means 1,000,000 bytes. These are fixture-specific retained payloads, not total
 process memory or a promise that every cartridge has the same snapshot size.
 Reports also include the peak actual retained history, each WASM heap and their

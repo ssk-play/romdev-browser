@@ -56,6 +56,9 @@ export interface SliceResult {
   /** The held image predates a checkpoint restore; cleared after a complete new bundle frame. */
   presentationStale: boolean;
 }
+/** Longest prediction window a bundle accepts, frames (one second at 60 fps): how far a player may run ahead of what is
+ *  confirmed. It retains window + 1 completed boundaries, so memory grows with it (docs/multiplayer-performance.md). */
+export const MAX_WINDOW = 60;
 export const CHECKPOINT_LIMIT = 1024 * 1024;
 export const CHECKPOINT_META_LIMIT = 4096;
 export const u32 = (v: number) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
@@ -104,7 +107,7 @@ export function validateConfig(c: BundleConfig) {
     !["wait", "replace"].includes(c.policy) ||
     !Number.isInteger(c.window) ||
     c.window < 1 ||
-    c.window > 24 ||
+    c.window > MAX_WINDOW ||
     !Number.isInteger(c.rtcEpochSeconds) ||
     c.rtcEpochSeconds < 0 ||
     c.rtcEpochSeconds > 0x7fffffff

@@ -161,7 +161,7 @@ Clients own those decisions and communicate only through postMessage.
 - `init {canvas}` transfers an OffscreenCanvas; `load {rom, config}` starts an epoch
   with standard zero cartridge RAM, fixed deterministic RTC and the new MP ABI.
   `config` fixes platform, shared/player-views mode, occupied slots, capacity,
-  epoch, seed, spike policy, prediction window (1–24) and RTC epoch seconds. Unknown
+  epoch, seed, spike policy, prediction window (1–60) and RTC epoch seconds. Unknown
   config keys are rejected and descriptor hashing uses a fixed-order tuple.
 - Shared mode runs one console. GB/GBC player-views runs the same ordered N consoles
   on every client, with each console's ROM slot fixed for its lifetime. Two players
