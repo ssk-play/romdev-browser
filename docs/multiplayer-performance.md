@@ -61,7 +61,8 @@ fresh frames per second. Slicing is not a performance pass by itself.
 
 On a named midrange Android and an iPhone, run actual GB/GBC shared and player-view
 cartridges at 1, 2 and 4 occupied slots, plus an actual four-player NES cartridge.
-Use maximum depth 24 and repeated/coalesced corrections, with a two-player baseline.
+Use maximum depth 60 (the frozen window chiptoy runs) and repeated/coalesced corrections, with a two-player
+baseline; also report total memory and GC pauses with 61 retained boundaries.
 The automated harness must report:
 
 - Whole-correction CPU and completion latency p50/p95/p99/max, plus restore,
