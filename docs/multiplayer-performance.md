@@ -31,12 +31,13 @@ times the figures above. Examples: GB shared 4.41 MB, GBC shared 5.91 MB, GBC fo
 
 MB means 1,000,000 bytes. These are fixture-specific retained payloads, not total
 process memory or a promise that every cartridge has the same snapshot size.
-Reports also include the peak actual retained history, each WASM heap and their
-sum, one partial bundle, selected/cached framebuffers, audio queues, checkpoint
-copies/encoding and temporary native serialization/digest buffers. Core heaps
-can grow and must be sampled after correction, not only at initial load.
-JavaScript object overhead, GC and browser process peak need separate device
-measurements; unavailable APIs are reported as unavailable, not zero memory.
+The harness reports actual retained history, summed WASM heap capacity and the
+optional main-page JS heap sample. It does not separately account for partial
+bundles, cached framebuffers, audio queues, checkpoint copies/encoding, temporary
+native serialization/digest buffers or worker JS objects. External process
+measurements must cover those allocations and GC. Core heaps are sampled after
+correction as well as at load. Unavailable APIs are reported as unavailable,
+not zero memory.
 
 ## Charge all work in a correction
 
@@ -51,7 +52,7 @@ understates both CPU and temporary-buffer work. Restore measurements include
 core restore, replay-audio draining, ABI checking and restored digest checking.
 No FIR/blipper history or causal state may be dropped to meet a budget.
 
-Measure complete bursts directly; multiplying a per-frame p95 by 24 does not
+Measure complete bursts directly; multiplying a per-frame p95 by the replay depth does not
 produce a burst p95. Measure both total correction CPU time and elapsed time until
 a complete corrected bundle is presented. A sliced replay holds the last complete
 image and discards replay audio; presenting that same image every rAF is not 60
@@ -88,8 +89,11 @@ No room integration or mobile pass is claimed from desktop timing alone.
 
 `dist/benchmark/index.html?profile=smoke&device=<label>` runs two maximum-depth
 corrections per case; the full profile (omit `profile`) excludes two warm-up bursts,
-runs at least 18 measured bursts per case, and sustains the GBC four-view and NES
-four-pad cases for ten minutes each. It takes about 25 minutes. Keep it foreground
+runs at least 200 measured bursts per case, and sustains the GBC four-view and NES
+four-pad cases for ten minutes each. Expect about 25–40 minutes depending on
+correction cost. `window=24` selects the historical comparison; the default is 60.
+The first 20 measured bursts and the sustained cases pace forward frames; subsequent
+non-sustained forward prefills are untimed and excluded from fresh-frame statistics. Keep it foreground
 and identify the physical device; visibility interruptions are reported. All 15
 platform/mode/count cases use actual cartridges, not simulated core stubs. Pacing
 uses native fps even on 120Hz displays. Every corrected bundle must equal an

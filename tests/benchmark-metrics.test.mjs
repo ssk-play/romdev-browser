@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { distribution } from '../src/benchmark-metrics.ts';
+import { benchmarkPlan, distribution } from '../src/benchmark-metrics.ts';
+test('the full performance gate uses the current window and enough samples for p99', () => {
+ assert.deepEqual(benchmarkPlan(new URLSearchParams()), { smoke:false, depth:60, warmupBursts:2, measuredBursts:200 });
+ assert.equal(benchmarkPlan(new URLSearchParams('window=24')).depth,24);
+ assert.deepEqual(benchmarkPlan(new URLSearchParams('profile=smoke')), { smoke:true, depth:60, warmupBursts:0, measuredBursts:2 });
+ for(const value of ['0','61','NaN']) assert.equal(benchmarkPlan(new URLSearchParams({window:value})).depth,60);
+});
 test('benchmark percentiles preserve measured tails and distinguish missing from zero samples',()=>{
  assert.equal(distribution([]),null);
  assert.deepEqual(distribution([0]),{count:1,p50:0,p95:0,p99:0,max:0});
