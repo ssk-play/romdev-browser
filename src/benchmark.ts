@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import { distribution } from "./benchmark-metrics.ts";
+import { benchmarkPlan, distribution } from "./benchmark-metrics.ts";
 import type { BundleEvent, BundleRequest } from "./bundle-protocol.ts";
 import type { BundleConfig, FrameInput, SliceResult } from "./multiplayer.ts";
 
@@ -8,7 +8,7 @@ const results = document.querySelector<HTMLPreElement>("#results")!;
 const canvas = document.querySelector<HTMLCanvasElement>("canvas")!;
 const pad = document.querySelector<HTMLButtonElement>("#pad")!;
 const query = new URLSearchParams(location.search),
-  smoke = query.get("profile") === "smoke";
+  { smoke, depth, warmupBursts, measuredBursts } = benchmarkPlan(query);
 const channel = crypto.randomUUID();
 let hidden = 0,
   cancelled = false,
@@ -142,7 +142,7 @@ async function run() {
           epoch: 7,
           seed: 12,
           policy: "replace",
-          window: 24,
+          window: depth,
           rtcEpochSeconds: 0,
         };
         status.textContent = `${platform.toUpperCase()} · ${mode} · ${count} players`;
@@ -166,7 +166,7 @@ async function run() {
               : { x: 0, y: 20, width: 160, height: 8 },
         } as Omit<BundleRequest, "id">);
         const initial = await checkpoint(-1),
-          canonical = Array.from({ length: 24 }, (_, f) => vector(config, f, true));
+          canonical = Array.from({ length: depth }, (_, f) => vector(config, f, true));
         const inputSendAge: number[] = [],
           drawAckAge: number[] = [],
           offlineVisible: number[] = [],
@@ -210,8 +210,8 @@ async function run() {
           let r = await rpc<SliceResult>({ type: "frame", input } as Omit<BundleRequest, "id">);
           while (!r.complete) r = await rpc({ type: "pump" });
         }
-        await rpc({ type: "confirm", frame: 23 } as Omit<BundleRequest, "id">);
-        const expected = await checkpoint(23);
+        await rpc({ type: "confirm", frame: depth - 1 } as Omit<BundleRequest, "id">);
+        const expected = await checkpoint(depth - 1);
         const beforeOnset = await rpc({
           type: "probe",
           region:
@@ -221,10 +221,10 @@ async function run() {
         } as Omit<BundleRequest, "id">);
         const onsetInput = (f: number) => ({
           ...vector(config, f),
-          masks: [f === 24 ? 1 : 0, 0, 0, 0],
+          masks: [f === depth ? 1 : 0, 0, 0, 0],
         });
         let expectedPixels: string | null = null;
-        for (let f = 24; f < 28; f++) {
+        for (let f = depth; f < depth + 4; f++) {
           let out = await rpc<MeasuredSlice>({ type: "frame", input: onsetInput(f) } as Omit<
             BundleRequest,
             "id"
@@ -248,20 +248,25 @@ async function run() {
           jsHeapPeak = jsHeap(),
           bursts = 0,
           coalescedBursts = 0,
+          freshFrames = 0,
           deterministic = true;
         const caseStart = performance.now(),
           thermal =
             !smoke &&
             count === 4 &&
             ((platform === "gbc" && mode === "player-views") || platform === "nes");
-        const minBursts = smoke ? 2 : 20,
+        const minBursts = warmupBursts + measuredBursts,
           duration = thermal ? 600_000 : 0;
         while (bursts < minBursts || performance.now() - caseStart < duration) {
           await restore(initial);
           lastFresh = 0;
+          // Pace the sustained cases and the first 20 measured bursts. The remaining
+          // forward prefill is untimed, so 200 correction samples do not require
+          // 200 seconds per case; they never count as fresh-frame pacing evidence.
+          const paced = smoke || thermal || bursts < warmupBursts + 20;
           const nativePace = pacer(loaded.fps);
-          for (let f = 0; f < 24; f++) {
-            await nativePace();
+          for (let f = 0; f < depth; f++) {
+            if (paced) await nativePace();
             let r = await rpc<SliceResult>({ type: "frame", input: vector(config, f) } as Omit<
               BundleRequest,
               "id"
@@ -271,13 +276,17 @@ async function run() {
               r = await rpc({ type: "pump" });
             }
             const now = performance.now();
-            if (lastFresh) fresh.push(now - lastFresh);
+            if (paced && lastFresh && bursts >= warmupBursts) fresh.push(now - lastFresh);
+            if (paced && bursts >= warmupBursts) freshFrames++;
             lastFresh = now;
             snapshotPeak = Math.max(snapshotPeak, r.snapshotBytes);
           }
+          // Sample once with every boundary retained, before correcting/pruning.
+          const retainedHeap = jsHeap();
+          if (retainedHeap !== null) jsHeapPeak = Math.max(jsHeapPeak ?? 0, retainedHeap);
           const correctionAt = performance.now();
           if (bursts % 2) {
-            await rpc({ type: "correct", inputs: canonical.slice(12), confirmed: -1 } as Omit<
+            await rpc({ type: "correct", inputs: canonical.slice(depth / 2), confirmed: -1 } as Omit<
               BundleRequest,
               "id"
             >);
@@ -285,19 +294,19 @@ async function run() {
               BundleRequest,
               "id"
             >);
-            if (bursts >= (smoke ? 0 : 2)) {
+            if (bursts >= warmupBursts) {
               slices.push(partial.workMs);
               steps.push(partial.nativeStepMs);
               captures.push(partial.captureMs);
               restores.push(partial.restoreMs);
             }
-            await rpc({ type: "correct", inputs: canonical.slice(0, 12), confirmed: 23 } as Omit<
+            await rpc({ type: "correct", inputs: canonical.slice(0, depth / 2), confirmed: depth - 1 } as Omit<
               BundleRequest,
               "id"
             >);
             coalescedBursts++;
           } else
-            await rpc({ type: "correct", inputs: canonical, confirmed: 23 } as Omit<
+            await rpc({ type: "correct", inputs: canonical, confirmed: depth - 1 } as Omit<
               BundleRequest,
               "id"
             >);
@@ -306,7 +315,7 @@ async function run() {
             completion: SliceResult["completedCorrection"] = null,
             completeAt = 0;
           // Capture and queue a new local input while replay is unfinished; the backlog remains bounded.
-          let r = await rpc<MeasuredSlice>({ type: "frame", input: onsetInput(24) } as Omit<
+          let r = await rpc<MeasuredSlice>({ type: "frame", input: onsetInput(depth) } as Omit<
             BundleRequest,
             "id"
           >);
@@ -315,7 +324,7 @@ async function run() {
               completion = r.completedCorrection;
               completeAt = performance.now();
             }
-            if (bursts >= (smoke ? 0 : 2)) {
+            if (bursts >= warmupBursts) {
               slices.push(r.workMs);
               steps.push(r.nativeStepMs);
               captures.push(r.captureMs);
@@ -327,7 +336,7 @@ async function run() {
             if (heap !== null) jsHeapPeak = Math.max(jsHeapPeak ?? 0, heap);
             if (r.pixelHash === expectedPixels && !visible) {
               await paint();
-              if (bursts >= (smoke ? 0 : 2)) correctedVisible.push(performance.now() - captured);
+              if (bursts >= warmupBursts) correctedVisible.push(performance.now() - captured);
               visible = true;
             }
             if (r.complete) break;
@@ -335,16 +344,16 @@ async function run() {
             r = await rpc({ type: "pump" });
           }
           if (!completion) throw new Error("Correction completion metrics missing");
-          held.push(completeAt - correctionAt);
-          if (bursts >= (smoke ? 0 : 2)) {
+          if (bursts >= warmupBursts) held.push(completeAt - correctionAt);
+          if (bursts >= warmupBursts) {
             cpu.push(completion.workMs);
             total.push(completeAt - correctionAt);
           }
-          deterministic &&= (await checkpoint(23)).bundleDigest === expected.bundleDigest;
+          deterministic &&= (await checkpoint(depth - 1)).bundleDigest === expected.bundleDigest;
           if (!deterministic)
             throw new Error("Corrected deterministic state differs from uninterrupted execution");
           const responsePace = pacer(loaded.fps);
-          for (let f = 25; f < 28; f++) {
+          for (let f = depth + 1; f < depth + 4; f++) {
             await responsePace();
             r = await rpc({ type: "frame", input: onsetInput(f) } as Omit<BundleRequest, "id">);
             while (!r.complete) {
@@ -353,7 +362,7 @@ async function run() {
             }
             if (r.pixelHash === expectedPixels && !visible) {
               await paint();
-              if (bursts >= (smoke ? 0 : 2)) correctedVisible.push(performance.now() - captured);
+              if (bursts >= warmupBursts) correctedVisible.push(performance.now() - captured);
               visible = true;
             }
           }
@@ -365,8 +374,8 @@ async function run() {
           platform,
           mode,
           slots,
-          window: 24,
-          depth: 24,
+          window: depth,
+          depth,
           durationMs: performance.now() - caseStart,
           bursts,
           coalescedBursts,
@@ -379,7 +388,7 @@ async function run() {
           consoleSlots: loaded.consoleSlots,
           schemas: loaded.schemas,
           jsHeapBytes: jsHeapPeak,
-          freshFrames: bursts * 24,
+          freshFrames,
           normalFreshFps: fresh.length
             ? (1000 * fresh.length) / fresh.reduce((a, b) => a + b, 0)
             : null,
@@ -441,6 +450,7 @@ async function run() {
       "Visible response is a software pixel/paint estimate, not physical display latency; process memory is unavailable",
       "Held frames are stalls, not fresh 60fps",
       "Physical-phone acceptance requires a named Android and iPhone",
+      "JavaScript heap API is optional and excludes worker/process memory; GC must be measured externally",
     ],
   };
   results.textContent = JSON.stringify(report, null, 2);

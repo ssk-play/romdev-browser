@@ -1,4 +1,10 @@
 export interface Distribution { count: number; p50: number; p95: number; p99: number; max: number }
+/** The current match window is 60. Keep 24 selectable to compare against historical reports. */
+export function benchmarkPlan(query: { get(name: string): string | null }) {
+  const smoke = query.get("profile") === "smoke";
+  const depth = query.get("window") === "24" ? 24 : 60;
+  return { smoke, depth, warmupBursts: smoke ? 0 : 2, measuredBursts: smoke ? 2 : 200 };
+}
 /** Nearest-rank percentiles. Empty samples are unavailable, never a fabricated zero. */
 export function distribution(samples: readonly number[]): Distribution | null {
   if (!samples.length) return null;

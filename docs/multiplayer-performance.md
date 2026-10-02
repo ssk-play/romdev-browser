@@ -88,8 +88,11 @@ No room integration or mobile pass is claimed from desktop timing alone.
 
 `dist/benchmark/index.html?profile=smoke&device=<label>` runs two maximum-depth
 corrections per case; the full profile (omit `profile`) excludes two warm-up bursts,
-runs at least 18 measured bursts per case, and sustains the GBC four-view and NES
-four-pad cases for ten minutes each. It takes about 25 minutes. Keep it foreground
+runs at least 200 measured bursts per case, and sustains the GBC four-view and NES
+four-pad cases for ten minutes each. Expect about 25–40 minutes depending on
+correction cost. `window=24` selects the historical comparison; the default is 60.
+The first 20 measured bursts and the sustained cases pace forward frames; subsequent
+non-sustained forward prefills are untimed and excluded from fresh-frame statistics. Keep it foreground
 and identify the physical device; visibility interruptions are reported. All 15
 platform/mode/count cases use actual cartridges, not simulated core stubs. Pacing
 uses native fps even on 120Hz displays. Every corrected bundle must equal an
