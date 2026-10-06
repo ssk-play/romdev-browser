@@ -1,9 +1,9 @@
 // Headless build + run service: the same toolchains and cores as the workers, behind HTTP, for a server that
 // makes games for someone (chiptoy's MCP endpoint runs it in a container). Stateless: every request carries its
-// sources or ROM. Requests are served one at a time.
+// sources or ROM. Requests are served one at a time; past GAMELAB_QUEUE_MAX (default 4) waiting or running, 503.
 //
 //   node dist/server.mjs            PORT (default 8080); GAMELAB_KEY, when set, must match the x-gamelab-key header
-//   GET  /health                    { ok, version }
+//   GET  /health                    { ok, version, queued, runningMs, skipped }
 //   POST /build { platform: gb | gbc | nes, sources: { "main.c": ..., "x.c": ... }, title? }
 //        -> { ok, stage, rom: base64|null, romBytesUsed, banks: { n: bytes }|null, issues, log, ms }
 //        gb/gbc: data (`#pragma constseg CODE_<n>`, n = 2-511) and `__banked` code (`#pragma codeseg CODE_<n>`) go
@@ -20,6 +20,7 @@ import { CORES, isPlatform, PLATFORMS, writeTouches, type Core } from "./platfor
 import type { EmscriptenFactory, ShareName, ToolLoader } from "./wasmtool.ts";
 import type { Buttons, Platform, Touches } from "./protocol.ts";
 import { runBundle, type BundleRunRequest } from "./bundle-headless.ts";
+import { Busy, Gone, JobQueue } from "./job-queue.ts";
 
 declare const __VERSION__: string;
 declare const __BUNDLE_BUILD__: string;
@@ -175,8 +176,14 @@ async function bundleRun(req:BundleRunRequest) {
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────────────────────────────────────
-let queue: Promise<unknown> = Promise.resolve();
-const serial = <T>(f: () => Promise<T>) => { const p = queue.then(f, f); queue = p.catch(() => {}); return p; };
+const jobs = new JobQueue(Number(process.env.GAMELAB_QUEUE_MAX) || 4);
+/** Queue a job for this request; leaving before its turn (the response closed unfinished) skips it. */
+function serial<T>(res: ServerResponse, f: () => Promise<T>) {
+  const left = new AbortController();
+  res.on("close", () => { if (!res.writableEnded) left.abort(); });
+  if (res.destroyed || res.socket?.destroyed) left.abort();
+  return jobs.add(f, left.signal);
+}
 
 async function body(req: IncomingMessage) {
   const chunks: Buffer[] = [];
@@ -191,13 +198,14 @@ function send(res: ServerResponse, status: number, data: unknown) {
 const KEY = process.env.GAMELAB_KEY ?? "";
 createServer(async (req, res) => {
   try {
-    if (req.url === "/health") return send(res, 200, { ok: true, version: __VERSION__ });
+    if (req.url === "/health") return send(res, 200, { ok: true, version: __VERSION__, ...jobs.status() });
     if (KEY && req.headers["x-gamelab-key"] !== KEY) return send(res, 401, { error: "unauthorized" });
-    if (req.method === "POST" && req.url === "/build") { const b = await body(req); return send(res, 200, await serial(() => build(b))); }
-    if (req.method === "POST" && req.url === "/run") { const b = await body(req); return send(res, 200, await serial(() => run(b))); }
-    if (req.method === "POST" && req.url === "/bundle/run") { const b = await body(req); return send(res, 200, await serial(() => bundleRun(b))); }
+    if (req.method === "POST" && req.url === "/build") { const b = await body(req); return send(res, 200, await serial(res, () => build(b))); }
+    if (req.method === "POST" && req.url === "/run") { const b = await body(req); return send(res, 200, await serial(res, () => run(b))); }
+    if (req.method === "POST" && req.url === "/bundle/run") { const b = await body(req); return send(res, 200, await serial(res, () => bundleRun(b))); }
     send(res, 404, { error: "not found" });
   } catch (err) {
-    send(res, 400, { error: (err as Error).message });
+    if (err instanceof Gone) return;
+    send(res, err instanceof Busy ? 503 : 400, { error: (err as Error).message });
   }
 }).listen(Number(process.env.PORT ?? 8080), "0.0.0.0", () => console.log(`romdev-browser server ${__VERSION__} on :${process.env.PORT ?? 8080}`));
