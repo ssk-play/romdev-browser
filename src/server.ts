@@ -1,9 +1,10 @@
 // Headless build + run service: the same toolchains and cores as the workers, behind HTTP, for a server that
 // makes games for someone (chiptoy's MCP endpoint runs it in a container). Stateless: every request carries its
-// sources or ROM. Requests are served one at a time; past GAMELAB_QUEUE_MAX (default 4) waiting or running, 503.
+// sources or ROM. Requests are served one at a time on a job thread; past GAMELAB_QUEUE_MAX (default 4) waiting or
+// running, 503; a job past GAMELAB_JOB_MS (default 45000) is stopped, 504.
 //
 //   node dist/server.mjs            PORT (default 8080); GAMELAB_KEY, when set, must match the x-gamelab-key header
-//   GET  /health                    { ok, version, queued, runningMs, skipped }
+//   GET  /health                    { ok, version, queued, runningMs, skipped, stopped }
 //   POST /build { platform: gb | gbc | nes, sources: { "main.c": ..., "x.c": ... }, title? }
 //        -> { ok, stage, rom: base64|null, romBytesUsed, banks: { n: bytes }|null, issues, log, ms }
 //        gb/gbc: data (`#pragma constseg CODE_<n>`, n = 2-511) and `__banked` code (`#pragma codeseg CODE_<n>`) go
@@ -12,6 +13,7 @@
 //                 memory: [{ region, offset, length }] }
 //        -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png: base64 }], sram: base64|null, ms }
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { isMainThread, parentPort, Worker } from "node:worker_threads";
 import { readFileSync } from "node:fs";
 import { crc32, deflateSync } from "node:zlib";
 import { LibretroHost } from "romdev-core-host";
@@ -175,14 +177,77 @@ async function bundleRun(req:BundleRunRequest) {
   },(rgba,width,height)=>png(rgba,width,height).toString("base64"));
 }
 
-// ── HTTP ──────────────────────────────────────────────────────────────────────────────────────────────────────
-const jobs = new JobQueue(Number(process.env.GAMELAB_QUEUE_MAX) || 4);
-/** Queue a job for this request; leaving before its turn (the response closed unfinished) skips it. */
-function serial<T>(res: ServerResponse, f: () => Promise<T>) {
-  const left = new AbortController();
-  res.on("close", () => { if (!res.writableEnded) left.abort(); });
-  if (res.destroyed || res.socket?.destroyed) left.abort();
-  return jobs.add(f, left.signal);
+// ── HTTP (main thread) and jobs (a worker thread) ────────────────────────────────────────────────────────────
+// Jobs run on one worker thread, so this thread stays free to answer /health, refuse a full queue and notice callers
+// that leave. A job past GAMELAB_JOB_MS (default 45 s) is stopped by terminating that thread; the next job starts a
+// fresh one, which loads the toolchain and cores again.
+type Kind = "build" | "run" | "bundleRun";
+const JOBS: Record<Kind, (body: never) => Promise<unknown>> = { build, run, bundleRun };
+const JOB_MS = Number(process.env.GAMELAB_JOB_MS) > 0 ? Number(process.env.GAMELAB_JOB_MS) : 45_000;
+
+if (isMainThread) serve();
+else parentPort!.on("message", async ({ kind, body }: { kind: Kind; body: unknown }) => {
+  try { parentPort!.postMessage({ result: await JOBS[kind](body as never) }); }
+  catch (err) { parentPort!.postMessage({ error: (err as Error).message }); }
+});
+
+class Stopped extends Error {}
+let thread: Worker | null = null;
+let stopped = 0;
+/** Run one job on the job thread (one at a time: the queue sees to that), stopping it past JOB_MS. */
+function jobThread() {
+  const w = new Worker(new URL(import.meta.url));
+  // always listened to, so a failure between jobs never takes this thread down; the next job starts a fresh one
+  w.on("error", (err) => console.error("job thread:", err)).on("exit", () => { if (thread === w) thread = null; });
+  return w;
+}
+function inThread(kind: Kind, body: unknown): Promise<unknown> {
+  const w = (thread ??= jobThread());
+  return new Promise((ok, fail) => {
+    const done = (end: () => void) => {
+      clearTimeout(timer);
+      w.off("message", onMessage).off("error", onError).off("exit", onExit);
+      end();
+    };
+    const lost = (why: string) => done(() => { if (thread === w) thread = null; fail(new Error(why)); });
+    const onMessage = (m: { result?: unknown; error?: string }) => done(() => (m.error !== undefined ? fail(new Error(m.error)) : ok(m.result)));
+    const onError = (err: Error) => lost(`the job thread failed: ${err.message}`);
+    const onExit = (code: number) => lost(`the job thread exited (${code})`);
+    const timer = setTimeout(() => done(() => {
+      if (thread === w) thread = null;
+      stopped++;
+      void w.terminate();
+      fail(new Stopped(`${kind === "bundleRun" ? "bundle run" : kind} took longer than ${JOB_MS / 1000} s and was stopped`));
+    }), JOB_MS);
+    w.on("message", onMessage).on("error", onError).on("exit", onExit);
+    w.postMessage({ kind, body });
+  });
+}
+
+function serve() {
+  const jobs = new JobQueue(Number(process.env.GAMELAB_QUEUE_MAX) || 4);
+  /** Queue a job for this request; leaving before its turn (the response closed unfinished) skips it. */
+  const serial = (res: ServerResponse, kind: Kind, body: unknown) => {
+    const left = new AbortController();
+    res.on("close", () => { if (!res.writableEnded) left.abort(); });
+    if (res.destroyed || res.socket?.destroyed) left.abort();
+    return jobs.add(() => inThread(kind, body), left.signal);
+  };
+  const ROUTES: Record<string, Kind> = { "/build": "build", "/run": "run", "/bundle/run": "bundleRun" };
+  const KEY = process.env.GAMELAB_KEY ?? "";
+  createServer(async (req, res) => {
+    try {
+      if (req.url === "/health") return send(res, 200, { ok: true, version: __VERSION__, ...jobs.status(), stopped });
+      if (KEY && req.headers["x-gamelab-key"] !== KEY) return send(res, 401, { error: "unauthorized" });
+      const kind = req.method === "POST" ? ROUTES[req.url ?? ""] : undefined;
+      if (!kind) return send(res, 404, { error: "not found" });
+      const b = await body(req);
+      send(res, 200, await serial(res, kind, b));
+    } catch (err) {
+      if (err instanceof Gone) return;
+      send(res, err instanceof Busy ? 503 : err instanceof Stopped ? 504 : 400, { error: (err as Error).message });
+    }
+  }).listen(Number(process.env.PORT ?? 8080), "0.0.0.0", () => console.log(`romdev-browser server ${__VERSION__} on :${process.env.PORT ?? 8080}`));
 }
 
 async function body(req: IncomingMessage) {
@@ -194,18 +259,3 @@ function send(res: ServerResponse, status: number, data: unknown) {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(data));
 }
-
-const KEY = process.env.GAMELAB_KEY ?? "";
-createServer(async (req, res) => {
-  try {
-    if (req.url === "/health") return send(res, 200, { ok: true, version: __VERSION__, ...jobs.status() });
-    if (KEY && req.headers["x-gamelab-key"] !== KEY) return send(res, 401, { error: "unauthorized" });
-    if (req.method === "POST" && req.url === "/build") { const b = await body(req); return send(res, 200, await serial(res, () => build(b))); }
-    if (req.method === "POST" && req.url === "/run") { const b = await body(req); return send(res, 200, await serial(res, () => run(b))); }
-    if (req.method === "POST" && req.url === "/bundle/run") { const b = await body(req); return send(res, 200, await serial(res, () => bundleRun(b))); }
-    send(res, 404, { error: "not found" });
-  } catch (err) {
-    if (err instanceof Gone) return;
-    send(res, err instanceof Busy ? 503 : 400, { error: (err as Error).message });
-  }
-}).listen(Number(process.env.PORT ?? 8080), "0.0.0.0", () => console.log(`romdev-browser server ${__VERSION__} on :${process.env.PORT ?? 8080}`));

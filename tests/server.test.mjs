@@ -31,7 +31,7 @@ test("server builds and runs a GBC game over HTTP", async (t) => {
   assert.notEqual(r.shots[0].png, r.shots[1].png, "Start should change the screen");
   assert.equal(Buffer.from(r.sram, "base64").length, 8192);
   const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
-  assert.deepEqual({ ...health, version: undefined }, { ok: true, version: undefined, queued: 0, runningMs: 0, skipped: 0 });
+  assert.deepEqual({ ...health, version: undefined }, { ok: true, version: undefined, queued: 0, runningMs: 0, skipped: 0, stopped: 0 });
 });
 
 test("server builds and runs __banked code and data past 4 MB (MBC5)", async (t) => {
@@ -161,4 +161,58 @@ test("headless bundle HTTP runs isolated canonical consoles and rejects invalid 
     const b=await bundle(c,r.build);try{const replay=new BundleReplay(b);for(const f of inputs){replay.enqueue(f);while(!replay.pump(8,1).complete){}replay.confirm(f.frame);}assert.equal(await boundaryDigest(b.descriptorHash,replay.checkpoint(15),{eventSeq:-1,chainHash:"0".repeat(16)}),r.digest);}finally{b.dispose();}
     for(const bad of [{...req,frames:3601},{...req,input:[inputs[1]]},{...req,memory:[{region:"save_ram",offset:0x100000,length:1}]}])assert.equal((await post(bad)).status,400);
   }
+});
+
+test("server answers while a job runs, refuses a full queue and stops a job past its deadline", async (t) => {
+  const start = async (env) => {
+    const port = 18000 + Math.floor(Math.random() * 1000);
+    const proc = spawn(process.execPath, [path.join(root, "dist", "server.mjs")], { env: { ...process.env, ...env, PORT: String(port) }, stdio: "pipe" });
+    t.after(() => proc.kill());
+    await new Promise((ok, fail) => { proc.stdout.on("data", ok); proc.on("exit", fail); });
+    const post = async (p, body) => { const r = await fetch(`http://127.0.0.1:${port}${p}`, { method: "POST", body: JSON.stringify(body) }); return { status: r.status, ...(await r.json()) }; };
+    const health = async () => (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    return { post, health };
+  };
+  const { rom } = await (await start({})).post("/build", { platform: "gbc", sources: { "main.c": template("gbc", "platformer") } });
+  const lab = await start({ GAMELAB_QUEUE_MAX: "1", GAMELAB_JOB_MS: "2000" });
+
+  const long = lab.post("/run", { platform: "gbc", rom, frames: 36000 });
+  await new Promise((ok) => setTimeout(ok, 300));
+  const busy = await lab.health();
+  assert.equal(busy.queued, 1, "/health answers while the job runs");
+  const refused = await lab.post("/run", { platform: "gbc", rom, frames: 10 });
+  assert.equal(refused.status, 503);
+  assert.match(refused.error, /busy/);
+
+  const stoppedRun = await long;
+  assert.equal(stoppedRun.status, 504);
+  assert.match(stoppedRun.error, /run took longer than 2 s and was stopped/);
+  const after = await lab.post("/run", { platform: "gbc", rom, frames: 10, memory: [{ offset: 0x1000, length: 1 }] });
+  assert.equal(after.status, 200, "a fresh job thread takes the next job");
+  assert.equal(after.rows.length, 1);
+  const h = await lab.health();
+  assert.deepEqual([h.queued, h.stopped], [0, 1]);
+});
+
+test("server skips a job whose caller left before its turn", async (t) => {
+  const port = 18000 + Math.floor(Math.random() * 1000);
+  const proc = spawn(process.execPath, [path.join(root, "dist", "server.mjs")], { env: { ...process.env, PORT: String(port) }, stdio: "pipe" });
+  t.after(() => proc.kill());
+  await new Promise((ok, fail) => { proc.stdout.on("data", ok); proc.on("exit", fail); });
+  const url = (p) => `http://127.0.0.1:${port}${p}`;
+  const post = (p, body, signal) => fetch(url(p), { method: "POST", body: JSON.stringify(body), signal });
+  const { rom } = await (await post("/build", { platform: "gbc", sources: { "main.c": template("gbc", "platformer") } })).json();
+  const first = post("/run", { platform: "gbc", rom, frames: 12000 });
+  await new Promise((ok) => setTimeout(ok, 200));
+  const leaving = new AbortController();
+  const left = post("/run", { platform: "gbc", rom, frames: 36000 }, leaving.signal).catch((e) => e);
+  await new Promise((ok) => setTimeout(ok, 200));
+  assert.equal((await (await fetch(url("/health"))).json()).queued, 2);
+  leaving.abort();
+  assert.equal((await left).name, "AbortError");
+  await new Promise((ok) => setTimeout(ok, 200));
+  assert.equal((await (await fetch(url("/health"))).json()).queued, 1, "the slot is free as soon as the caller leaves");
+  assert.equal((await first).status, 200);
+  const h = await (await fetch(url("/health"))).json();
+  assert.deepEqual([h.queued, h.skipped], [0, 1]);
 });

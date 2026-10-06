@@ -43,3 +43,25 @@ test("parseIssues handles syntax errors", () => {
   const issues = parseIssues("/work/main.c:7: syntax error: token -> '}' ; column 1\n");
   assert.deepEqual(issues, [{ file: "main.c", line: 7, severity: "error", message: "syntax error: token -> '}' ; column 1" }]);
 });
+
+test("a rebuild compiles only the files that changed, and gives the same ROM as a fresh toolchain", async () => {
+  const sources = {
+    "main.c": template("gbc", "platformer"),
+    "extra.c": "#include \"gb_runtime.h\"\n#include \"extra.h\"\nunsigned char extra_value(void) { return EXTRA; }\n",
+    "extra.h": "#define EXTRA 7\nunsigned char extra_value(void);\n",
+  };
+  const warm = new Toolchain(nodeLoader());
+  const first = await warm.build({ platform: "gbc", sources }, runtimeFor("gbc"));
+  assert.ok(first.ok, first.log);
+  const again = await warm.build({ platform: "gbc", sources }, runtimeFor("gbc"));
+  assert.deepEqual(again.rom, first.rom);
+  assert.ok(again.ms < first.ms / 2, `cached rebuild ${again.ms} ms vs ${first.ms} ms`);
+
+  // a header change reaches the files that include it
+  const changed = { ...sources, "extra.h": "#define EXTRA 9\nunsigned char extra_value(void);\n" };
+  const rebuilt = await warm.build({ platform: "gbc", sources: changed }, runtimeFor("gbc"));
+  const fresh = await new Toolchain(nodeLoader()).build({ platform: "gbc", sources: changed }, runtimeFor("gbc"));
+  assert.ok(rebuilt.ok && fresh.ok, rebuilt.log);
+  assert.deepEqual(rebuilt.rom, fresh.rom);
+  assert.notDeepEqual(rebuilt.rom, first.rom);
+});

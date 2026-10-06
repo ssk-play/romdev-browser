@@ -47,8 +47,13 @@ export interface BuildInput {
 const CODE_LOC = 0x0150;
 const DATA_LOC = 0xc200; // above shadow_oam ($C100-$C19F)
 
+/** Compiled units kept per Toolchain: a build recompiles only the .c files whose preprocessed text changed. */
+const COMPILED_MAX = 64;
+type Compiled = { rel: string; log: string; asm: string; adb: string | null };
+
 export class Toolchain {
   private runtimeRelCache = new Map<string, { runtime: string; crt0: string }>();
+  private compiled = new Map<string, Compiled>();
   private loader: ToolLoader;
 
   constructor(loader: ToolLoader) {
@@ -77,6 +82,15 @@ export class Toolchain {
       { files, outputs: [out] },
     );
     if (cpp.code !== 0 || !cpp.outputs[out]) return { rel: null, log: `--- mcpp (${name}) ---\n${cpp.log}` };
+    // sdcc and sdasgb are deterministic: the same preprocessed unit (its #line names included) under the same flags
+    // gives the same object, so an unchanged file is not compiled again
+    const key = `${records ? "debug" : "plain"}\0${name}\0${cpp.outputs[out]}`;
+    const hit = this.compiled.get(key);
+    if (hit) {
+      this.compiled.delete(key);
+      this.compiled.set(key, hit);
+      return { ...hit, cpp: cpp.outputs[out]! };
+    }
     const assembly=`/work/${name.replace(/\.c$/,".asm")}`,debug=`/work/${name.replace(/\.c$/,".adb")}`;
     const cc = await this.run("sdcc", ["-msm83", ...(records?["--debug"]:[]), "--c1mode", "-o", assembly], {
       stdin: cpp.outputs[out]!,
@@ -85,7 +99,12 @@ export class Toolchain {
     const log = `--- sdcc (${name}) ---\n${cpp.log}${cc.log}`;
     if (cc.code !== 0 || !cc.outputs[assembly]) return { rel: null, log };
     const asm = await this.assemble(cc.outputs[assembly]!);
-    return { rel: asm.rel, log: log + asm.log, asm:cc.outputs[assembly]!, adb:cc.outputs[debug]??null,cpp:cpp.outputs[out]! };
+    const unit = { rel: asm.rel, log: log + asm.log, asm: cc.outputs[assembly]!, adb: cc.outputs[debug] ?? null };
+    if (unit.rel !== null) {
+      this.compiled.set(key, unit as Compiled);
+      if (this.compiled.size > COMPILED_MAX) this.compiled.delete(this.compiled.keys().next().value!);
+    }
+    return { ...unit, cpp: cpp.outputs[out]! };
   }
 
   private async assemble(source: string) {
