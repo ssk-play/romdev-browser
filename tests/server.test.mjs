@@ -22,6 +22,11 @@ test("server builds and runs a GBC game over HTTP", async (t) => {
 
   const b = await post("/build", { platform: "gbc", sources: { "main.c": template("gbc", "platformer") } });
   assert.ok(b.ok, b.log);
+  assert.equal(b.objects, undefined, "objects come back only when asked for");
+  const kept = await post("/build", { platform: "gbc", sources: { "main.c": template("gbc", "platformer") }, objects: {} });
+  assert.equal(kept.rom, b.rom);
+  assert.equal(Object.keys(kept.objects).length, 1);
+  assert.equal(typeof Object.values(kept.objects)[0].rel, "string");
   const r = await post("/run", { platform: "gbc", rom: b.rom, frames: 240, input: [{ frame: 120, until: 126, buttons: ["start"] }],
     shots: [100, 240], every: 60, memory: [{ offset: 0x1000, length: 16 }], sram: true });
   assert.deepEqual(r.rows.map((x) => x.frame), [60, 100, 120, 180, 240]);

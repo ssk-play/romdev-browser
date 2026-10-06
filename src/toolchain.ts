@@ -34,7 +34,12 @@ export interface BuildResult {
   issues: BuildIssue[];
   log: string;
   ms: number;
+  /** When the input carried `objects`: every unit this build compiled or reused, for the host to keep. */
+  objects?: Record<string, CompiledUnit>;
 }
+
+/** One compiled .c file: its object (.rel), compiler log, and the assembly/debug records the memory contract reads. */
+export interface CompiledUnit { rel: string; log: string; asm: string; adb: string | null }
 
 export interface BuildInput {
   platform: Platform;
@@ -42,6 +47,8 @@ export interface BuildInput {
   title?: string;
   /** Supplied by the host after recognizing its pinned engine ABI, never by game-authored JSON. */
   memoryContract?: MemoryContract;
+  /** Compiled units the host kept from earlier builds (a result's `objects`); passing it (even `{}`) asks for them back. */
+  objects?: Record<string, CompiledUnit>;
 }
 
 const CODE_LOC = 0x0150;
@@ -49,15 +56,25 @@ const DATA_LOC = 0xc200; // above shadow_oam ($C100-$C19F)
 
 /** Compiled units kept per Toolchain: a build recompiles only the .c files whose preprocessed text changed. */
 const COMPILED_MAX = 64;
-type Compiled = { rel: string; log: string; asm: string; adb: string | null };
+const isUnit = (u: unknown): u is CompiledUnit => {
+  const v = u as CompiledUnit;
+  return !!v && typeof v.rel === "string" && typeof v.log === "string" && typeof v.asm === "string" && (v.adb === null || typeof v.adb === "string");
+};
+async function sha256(text: string) {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 export class Toolchain {
   private runtimeRelCache = new Map<string, { runtime: string; crt0: string }>();
-  private compiled = new Map<string, Compiled>();
+  private compiled = new Map<string, CompiledUnit>();
   private loader: ToolLoader;
+  private cacheTag: string;
 
-  constructor(loader: ToolLoader) {
+  /** `cacheTag` names this toolchain build (its version) in unit keys, so units from another one are never reused. */
+  constructor(loader: ToolLoader, cacheTag = "") {
     this.loader = loader;
+    this.cacheTag = cacheTag;
   }
 
   private run(tool: ToolName, argv: string[], opts: Parameters<typeof runTool>[3] = {}) {
@@ -83,13 +100,13 @@ export class Toolchain {
     );
     if (cpp.code !== 0 || !cpp.outputs[out]) return { rel: null, log: `--- mcpp (${name}) ---\n${cpp.log}` };
     // sdcc and sdasgb are deterministic: the same preprocessed unit (its #line names included) under the same flags
-    // gives the same object, so an unchanged file is not compiled again
-    const key = `${records ? "debug" : "plain"}\0${name}\0${cpp.outputs[out]}`;
+    // and toolchain gives the same object, so an unchanged file is not compiled again
+    const key = await sha256(`${this.cacheTag}\0${records ? "debug" : "plain"}\0${name}\0${cpp.outputs[out]}`);
     const hit = this.compiled.get(key);
     if (hit) {
       this.compiled.delete(key);
       this.compiled.set(key, hit);
-      return { ...hit, cpp: cpp.outputs[out]! };
+      return { ...hit, key, cpp: cpp.outputs[out]! };
     }
     const assembly=`/work/${name.replace(/\.c$/,".asm")}`,debug=`/work/${name.replace(/\.c$/,".adb")}`;
     const cc = await this.run("sdcc", ["-msm83", ...(records?["--debug"]:[]), "--c1mode", "-o", assembly], {
@@ -101,10 +118,10 @@ export class Toolchain {
     const asm = await this.assemble(cc.outputs[assembly]!);
     const unit = { rel: asm.rel, log: log + asm.log, asm: cc.outputs[assembly]!, adb: cc.outputs[debug] ?? null };
     if (unit.rel !== null) {
-      this.compiled.set(key, unit as Compiled);
+      this.compiled.set(key, unit as CompiledUnit);
       if (this.compiled.size > COMPILED_MAX) this.compiled.delete(this.compiled.keys().next().value!);
     }
-    return { ...unit, cpp: cpp.outputs[out]! };
+    return { ...unit, key, cpp: cpp.outputs[out]! };
   }
 
   private async assemble(source: string) {
@@ -130,7 +147,10 @@ export class Toolchain {
 
   async build(input: BuildInput, rt: PlatformRuntime): Promise<BuildResult> {
     const t0 = performance.now();
-    const done = (r: Omit<BuildResult, "ms">): BuildResult => ({ ...r, ms: Math.round(performance.now() - t0) });
+    const units = new Map<string, CompiledUnit>();
+    const done = (r: Omit<BuildResult, "ms">): BuildResult =>
+      ({ ...r, ...(input.objects ? { objects: Object.fromEntries(units) } : {}), ms: Math.round(performance.now() - t0) });
+    for (const [k, u] of Object.entries(input.objects ?? {})) if (!this.compiled.has(k) && isUnit(u)) this.compiled.set(k, u);
     let log = "";
     const contract=input.memoryContract,allocations:Allocation[]=[],assemblies=new Map<string,string>(),preprocessed=new Map<string,string>();
     const memoryFailure=(e:unknown)=>done({ok:false,stage:"compile",rom:null,romBytesUsed:0,issues:[{file:"memory",line:null,severity:"error",message:String((e as Error).message??e)}],log});
@@ -144,6 +164,7 @@ export class Toolchain {
       if (name === "gb_runtime.c") continue; // always the bundled runtime
       const r = await this.compileC(name, text, headers,!!contract);
       log += r.log;
+      if (r.rel && "key" in r && r.key) units.set(r.key, { rel: r.rel, log: r.log, asm: r.asm!, adb: r.adb ?? null });
       if (!r.rel) return done({ ok: false, stage: "compile", rom: null, romBytesUsed: 0, issues: parseIssues(log), log });
       if(contract)try{
         const a=sdccAllocations(name,r.asm!,r.adb!);allocations.push(...a);assemblies.set(name,r.asm!);
