@@ -30,6 +30,8 @@ test("server builds and runs a GBC game over HTTP", async (t) => {
   assert.equal(Buffer.from(r.shots[0].png, "base64").subarray(1, 4).toString(), "PNG");
   assert.notEqual(r.shots[0].png, r.shots[1].png, "Start should change the screen");
   assert.equal(Buffer.from(r.sram, "base64").length, 8192);
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  assert.deepEqual({ ...health, version: undefined }, { ok: true, version: undefined, queued: 0, runningMs: 0, skipped: 0 });
 });
 
 test("server builds and runs __banked code and data past 4 MB (MBC5)", async (t) => {

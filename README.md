@@ -101,11 +101,13 @@ GPL-2.0-only. See LICENSE and NOTICE.md for bundled components and their sources
 ## Headless service (`dist/server.mjs`)
 
 The same toolchain and gambatte core behind HTTP, for a server that builds and runs games for someone (chiptoy runs
-it in a container for its MCP endpoint). Stateless; requests are served one at a time.
+it in a container for its MCP endpoint). Stateless; requests are served one at a time. At most `GAMELAB_QUEUE_MAX`
+(default 4) wait or run: a full queue answers `503 { error: "busy: …" }` at once, and a request whose caller hung up
+before its turn is skipped.
 
 ```
-PORT=8080 [GAMELAB_KEY=secret] node dist/server.mjs
-GET  /health
+PORT=8080 [GAMELAB_KEY=secret] [GAMELAB_QUEUE_MAX=4] node dist/server.mjs
+GET  /health -> { ok, version, queued, runningMs, skipped }
 POST /build { platform: gb|gbc|nes, sources: { "main.c", ...extra .c/.h/.s }, title? }  -> { ok, stage, rom (base64), romBytesUsed, banks, issues, log, ms }
 POST /run   { platform, rom, frames, input: [{ frame, until, buttons, touch?, touches? }], shots: [frame], every, memory: [{ region, offset, length }], sram? }
             -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png }], sram, ms }
