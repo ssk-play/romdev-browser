@@ -65,3 +65,25 @@ test("a rebuild compiles only the files that changed, and gives the same ROM as 
   assert.deepEqual(rebuilt.rom, fresh.rom);
   assert.notDeepEqual(rebuilt.rom, first.rom);
 });
+
+test("a fresh toolchain given a build's objects recompiles nothing, and ignores units from another toolchain", async () => {
+  const sources = { "main.c": template("gbc", "platformer"), "extra.c": "unsigned char extra(void) { return 3; }\n" };
+  const first = await new Toolchain(nodeLoader(), "v1").build({ platform: "gbc", sources, objects: {} }, runtimeFor("gbc"));
+  assert.ok(first.ok, first.log);
+  assert.equal(Object.keys(first.objects).length, 2, "one unit per .c file");
+
+  const fresh = new Toolchain(nodeLoader(), "v1");
+  await fresh.build({ platform: "gbc", sources: { "main.c": "void main(void) {}\n" } }, runtimeFor("gbc")); // tools and runtime loaded
+  const reused = await fresh.build({ platform: "gbc", sources, objects: first.objects }, runtimeFor("gbc"));
+  assert.deepEqual(reused.rom, first.rom);
+  assert.deepEqual(Object.keys(reused.objects).sort(), Object.keys(first.objects).sort());
+  assert.ok(reused.ms < first.ms / 2, `with objects ${reused.ms} ms vs ${first.ms} ms`);
+
+  // another toolchain build names its units differently, and malformed units are ignored
+  const other = await new Toolchain(nodeLoader(), "v2").build({ platform: "gbc", sources, objects: first.objects }, runtimeFor("gbc"));
+  assert.deepEqual(other.rom, first.rom);
+  assert.equal(Object.keys(other.objects).filter((k) => k in first.objects).length, 0);
+  const bad = Object.fromEntries(Object.keys(first.objects).map((k) => [k, { rel: 1 }]));
+  const ignored = await new Toolchain(nodeLoader(), "v1").build({ platform: "gbc", sources, objects: bad }, runtimeFor("gbc"));
+  assert.deepEqual(ignored.rom, first.rom);
+});

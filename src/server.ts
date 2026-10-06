@@ -5,8 +5,10 @@
 //
 //   node dist/server.mjs            PORT (default 8080); GAMELAB_KEY, when set, must match the x-gamelab-key header
 //   GET  /health                    { ok, version, queued, runningMs, skipped, stopped }
-//   POST /build { platform: gb | gbc | nes, sources: { "main.c": ..., "x.c": ... }, title? }
-//        -> { ok, stage, rom: base64|null, romBytesUsed, banks: { n: bytes }|null, issues, log, ms }
+//   POST /build { platform: gb | gbc | nes, sources: { "main.c": ..., "x.c": ... }, title?, objects? }
+//        -> { ok, stage, rom: base64|null, romBytesUsed, banks: { n: bytes }|null, issues, log, ms, objects? }
+//        objects: compiled units a host kept from an earlier result (gb/gbc); sending it (even {}) returns this
+//        build's units, so a fresh process recompiles only changed files
 //        gb/gbc: data (`#pragma constseg CODE_<n>`, n = 2-511) and `__banked` code (`#pragma codeseg CODE_<n>`) go
 //        to switchable ROM bank n; the cart becomes MBC5. nes: romdev's NES C project (32 KB PRG, CHR-RAM, battery).
 //   POST /run   { platform, rom: base64, frames, input: [{ frame, until, buttons, touch: {x, y} | touches: [{x, y} | null] }], shots: [frame], every,
@@ -53,7 +55,7 @@ const loader: ToolLoader = {
     return shares.get(name)!;
   },
 };
-const buildRom = builder(loader);
+const buildRom = builder(loader, `romdev-browser ${__VERSION__}`);
 
 // ── emulator ──────────────────────────────────────────────────────────────────────────────────────────────────
 const hosts = new Map<Core, Promise<LibretroHost>>();
@@ -164,9 +166,10 @@ async function run(req: RunRequest) {
 async function build(req: import("./toolchain.ts").BuildInput) {
   if (!isPlatform(req.platform)) throw platformError();
   if (!req.sources || typeof req.sources["main.c"] !== "string") throw new Error("sources must include main.c");
-  const r = await buildRom({ platform: req.platform, sources: req.sources, title: req.title, memoryContract:req.memoryContract });
+  const objects = req.objects && typeof req.objects === "object" ? req.objects : undefined;
+  const r = await buildRom({ platform: req.platform, sources: req.sources, title: req.title, memoryContract:req.memoryContract, objects });
   return { ok: r.ok, stage: r.stage, rom: r.rom ? Buffer.from(r.rom).toString("base64") : null, romBytesUsed: r.romBytesUsed,
-    banks: r.banks ?? null, issues: r.issues, log: r.log.slice(-4000), ms: r.ms };
+    banks: r.banks ?? null, issues: r.issues, log: r.log.slice(-4000), ms: r.ms, ...(r.objects ? { objects: r.objects } : {}) };
 }
 
 async function bundleRun(req:BundleRunRequest) {

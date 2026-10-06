@@ -11,8 +11,8 @@ export const TOOLCHAIN_FILES: Record<ToolchainName, { tools: string[]; share: Sh
   cc65: { tools: ["cc65", "ca65", "ld65"], share: "cc65" },
 };
 
-export function builder(loader: ToolLoader): (input: BuildInput) => Promise<BuildResult> {
-  const sdcc = new Toolchain(loader);
+export function builder(loader: ToolLoader, cacheTag = ""): (input: BuildInput) => Promise<BuildResult> {
+  const sdcc = new Toolchain(loader, cacheTag);
   const cc65 = new Cc65Toolchain(loader);
   return (input) => (input.platform === "nes" ? cc65.build(input, NES_RUNTIME) : sdcc.build(input, RUNTIME[input.platform]));
 }
