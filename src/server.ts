@@ -195,8 +195,14 @@ class Stopped extends Error {}
 let thread: Worker | null = null;
 let stopped = 0;
 /** Run one job on the job thread (one at a time: the queue sees to that), stopping it past JOB_MS. */
+function jobThread() {
+  const w = new Worker(new URL(import.meta.url));
+  // always listened to, so a failure between jobs never takes this thread down; the next job starts a fresh one
+  w.on("error", (err) => console.error("job thread:", err)).on("exit", () => { if (thread === w) thread = null; });
+  return w;
+}
 function inThread(kind: Kind, body: unknown): Promise<unknown> {
-  const w = (thread ??= new Worker(new URL(import.meta.url)));
+  const w = (thread ??= jobThread());
   return new Promise((ok, fail) => {
     const done = (end: () => void) => {
       clearTimeout(timer);
