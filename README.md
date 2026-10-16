@@ -51,6 +51,9 @@ Events: `{type:"progress", loaded, total}` (uncompressed bytes), `{type:"ready"}
 Build recipe (romdev's GB C project recipe): the bundled `gb_crt0.s` (MBC1+RAM+BATTERY header,
 vectors, BSS init) and `gb_runtime.c` are always linked; `gb_hardware.h`, `gb_runtime.h`, `font.h`
 are on the include path; `_CODE=$0150`, `_DATA=$C200`; 32 KB, plus MBC5 banks for `#pragma constseg/codeseg CODE_<n>`.
+Link order: crt0, `gb_runtime.c`, then the SDCC library modules the build uses (`*` `/` `%`, 32-bit math, struct
+copies, function-pointer calls; those SDCC keeps in `_HOME` are linked as `_CODE`), then the sources in the order given.
+So every library helper sits in the first 16 KB, where a `__banked` function (its bank at $4000-$7FFF) can reach it.
 
 NES (romdev's NES C project): `cc65 -t nes -Oirs` and `ca65 -t nes` per source (`.c`, `.s`), linked by ld65 with romdev's
 `chr-ram-wram` config and crt0 (iNES header: 32 KB PRG-ROM, CHR-RAM, vertical mirroring, battery PRG-RAM at
@@ -108,11 +111,14 @@ thread always answers. At most `GAMELAB_QUEUE_MAX` (default 4) wait or run: a fu
 The toolchain keeps compiled units, so a rebuild compiles only the `.c` files whose preprocessed text changed. A host
 that sends `objects` with `/build` (even `{}`) gets this build's units back (gb/gbc) and can send them with a later
 build, so a fresh process also recompiles only what changed; units of another romdev-browser version are ignored.
+Each unit also carries `sym`, the assembler's symbol table (static labels too, with area and offset), and a linked
+build that was sent `objects` returns `symbols`, every global symbol's address from the linker map: with the units'
+relocations, a host can follow each call to the address it lands on (chiptoy checks what `__banked` code reaches).
 
 ```
 PORT=8080 [GAMELAB_KEY=secret] [GAMELAB_QUEUE_MAX=4] [GAMELAB_JOB_MS=45000] node dist/server.mjs
 GET  /health -> { ok, version, queued, runningMs, skipped, stopped }
-POST /build { platform: gb|gbc|nes, sources: { "main.c", ...extra .c/.h/.s }, title?, objects? }  -> { ok, stage, rom (base64), romBytesUsed, banks, issues, log, ms, objects? }
+POST /build { platform: gb|gbc|nes, sources: { "main.c", ...extra .c/.h/.s }, title?, objects? }  -> { ok, stage, rom (base64), romBytesUsed, banks, issues, log, ms, objects?, symbols? }
 POST /run   { platform, rom, frames, input: [{ frame, until, buttons, touch?, touches? }], shots: [frame], every, memory: [{ region, offset, length }], sram? }
             -> { rows: [{ frame, memory: [hex] }], shots: [{ frame, png }], sram, ms }
 POST /bundle/run { config, rom, frames, input?: FrameInput[], shots?: number[], every?, memory?: [{region,offset,length}] }

@@ -86,6 +86,59 @@ unsigned char far_sum(unsigned char a, unsigned char b) __banked { return (unsig
   }
 });
 
+test("the C library links before the sources, so __banked code reaches it past 16 KB of fixed code", async (t) => {
+  const port = 18000 + Math.floor(Math.random() * 1000);
+  const proc = spawn(process.execPath, [path.join(root, "dist", "server.mjs")], { env: { ...process.env, PORT: String(port) }, stdio: "pipe" });
+  t.after(() => proc.kill());
+  await new Promise((ok, fail) => { proc.stdout.on("data", ok); proc.on("exit", fail); });
+  const post = async (p, body) => (await fetch(`http://127.0.0.1:${port}${p}`, { method: "POST", body: JSON.stringify(body) })).json();
+  const sources = {
+    "main.c": `#include "gb_runtime.h"
+struct pair { unsigned char a, b, c, d, e, f, g, h, i; };
+unsigned int far_math(unsigned int a, unsigned int b) __banked;
+unsigned char twice(unsigned char x) { return (unsigned char)(x + x); }
+unsigned char (*hook)(unsigned char);
+struct pair src = { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, dst;
+__at (0xD000) unsigned int result;
+__at (0xD002) unsigned char hooked;
+__at (0xD003) unsigned char copied;
+__at (0xD004) unsigned char done;
+extern const unsigned char big[];
+void main(void) {
+  hook = twice;
+  result = far_math(300, 7);
+  done = big[1] + 1;
+  for (;;) wait_vblank();
+}
+`,
+    // 20000 bytes of fixed data: without the library first, its helpers would link past $4000
+    "big.c": `const unsigned char big[20000] = { 1, 2 };\n`,
+    "far.c": `#pragma codeseg CODE_2
+struct pair { unsigned char a, b, c, d, e, f, g, h, i; };
+extern struct pair src, dst;
+extern unsigned char (*hook)(unsigned char);
+extern unsigned char hooked, copied;
+unsigned int far_math(unsigned int a, unsigned int b) __banked {
+  volatile unsigned long w = a;
+  w = w * b;                                   /* __mullong, kept in _HOME by SDCC */
+  dst = src;                                   /* ___memcpy */
+  copied = dst.i;
+  hooked = hook(21);                           /* ___sdcc_call_hl */
+  return (unsigned int)(w / 3u) + a * b % 11u; /* __divulong, __mulint, __moduint */
+}
+`,
+  };
+  const b = await post("/build", { platform: "gbc", sources, objects: {} });
+  assert.ok(b.ok, b.log);
+  for (const u of Object.values(b.objects)) assert.match(u.sym, /Symbol Table/);
+  for (const helper of ["__mullong", "__divulong", "__mulint", "__moduint", "___memcpy", "___sdcc_call_hl"])
+    assert.ok(b.symbols[helper] < b.symbols._main, `${helper} at ${b.symbols[helper]} links before main.c (${b.symbols._main})`);
+  assert.ok(b.symbols._big < 0x4000 && b.symbols._big + 20000 > 0x4000, "the fixed code passes 16 KB");
+  const r = await post("/run", { platform: "gbc", rom: b.rom, frames: 20, memory: [{ offset: 0x1000, length: 5 }] });
+  // 300 * 7 = 2100, / 3 = 700, + 2100 % 11 (= 10) = 710 = $02C6; hook(21) = 42 = $2A; dst.i = 9; big[1] + 1 = 3
+  assert.equal(r.rows.at(-1).memory[0], "c6022a0903");
+});
+
 test("server builds and runs NES next to GBC in one process", async (t) => {
   const port = 19000 + Math.floor(Math.random() * 1000);
   const proc = spawn(process.execPath, [path.join(root, "dist", "server.mjs")], { env: { ...process.env, PORT: String(port) }, stdio: "pipe" });
