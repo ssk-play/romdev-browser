@@ -36,10 +36,15 @@ export interface BuildResult {
   ms: number;
   /** When the input carried `objects`: every unit this build compiled or reused, for the host to keep. */
   objects?: Record<string, CompiledUnit>;
+  /** With `objects`, after a link: every global symbol's linked address (banked ones as n << 16 | $4000-$7FFF). */
+  symbols?: Record<string, number>;
 }
 
-/** One compiled .c file: its object (.rel), compiler log, and the assembly/debug records the memory contract reads. */
-export interface CompiledUnit { rel: string; log: string; asm: string; adb: string | null }
+/**
+ * One compiled .c file: its object (.rel), compiler log, the assembly/debug records the memory contract reads, and the
+ * assembler's symbol table (`sym`: every label, static ones too, with its area and offset; absent in older units).
+ */
+export interface CompiledUnit { rel: string; log: string; asm: string; adb: string | null; sym?: string | null }
 
 export interface BuildInput {
   platform: Platform;
@@ -116,7 +121,7 @@ export class Toolchain {
     const log = `--- sdcc (${name}) ---\n${cpp.log}${cc.log}`;
     if (cc.code !== 0 || !cc.outputs[assembly]) return { rel: null, log };
     const asm = await this.assemble(cc.outputs[assembly]!);
-    const unit = { rel: asm.rel, log: log + asm.log, asm: cc.outputs[assembly]!, adb: cc.outputs[debug] ?? null };
+    const unit = { rel: asm.rel, log: log + asm.log, asm: cc.outputs[assembly]!, adb: cc.outputs[debug] ?? null, sym: asm.sym };
     if (unit.rel !== null) {
       this.compiled.set(key, unit as CompiledUnit);
       if (this.compiled.size > COMPILED_MAX) this.compiled.delete(this.compiled.keys().next().value!);
@@ -125,12 +130,13 @@ export class Toolchain {
   }
 
   private async assemble(source: string) {
-    const r = await this.run("sdasgb", ["-plosgff", "/work/main.rel", "/work/main.s"], {
+    // -w: the symbol table (main.sym) with whole names; the object is the same with or without it
+    const r = await this.run("sdasgb", ["-plosgffw", "/work/main.rel", "/work/main.s"], {
       files: { "/work/main.s": source },
-      outputs: ["/work/main.rel"],
+      outputs: ["/work/main.rel", "/work/main.sym"],
     });
     const ok = r.code === 0 && !!r.outputs["/work/main.rel"];
-    return { rel: ok ? r.outputs["/work/main.rel"]! : null, log: r.log ? `--- sdasgb ---\n${r.log}` : "" };
+    return { rel: ok ? r.outputs["/work/main.rel"]! : null, sym: ok ? r.outputs["/work/main.sym"] ?? null : null, log: r.log ? `--- sdasgb ---\n${r.log}` : "" };
   }
 
   private async runtimeObjects(platform: Platform, rt: PlatformRuntime) {
@@ -164,7 +170,7 @@ export class Toolchain {
       if (name === "gb_runtime.c") continue; // always the bundled runtime
       const r = await this.compileC(name, text, headers,!!contract);
       log += r.log;
-      if (r.rel && "key" in r && r.key) units.set(r.key, { rel: r.rel, log: r.log, asm: r.asm!, adb: r.adb ?? null });
+      if (r.rel && "key" in r && r.key) units.set(r.key, { rel: r.rel, log: r.log, asm: r.asm!, adb: r.adb ?? null, sym: r.sym ?? null });
       if (!r.rel) return done({ ok: false, stage: "compile", rom: null, romBytesUsed: 0, issues: parseIssues(log), log });
       if(contract)try{
         const a=sdccAllocations(name,r.asm!,r.adb!);allocations.push(...a);assemblies.set(name,r.asm!);
@@ -194,12 +200,18 @@ export class Toolchain {
         banks.add(bank);
       }
     const rtObjs = await this.runtimeObjects(input.platform, rt);
+    const share = await this.shareFiles("lib/sm83/", "/share/sdcc/lib/sm83/");
     const files: Record<string, Uint8Array | string> = {
-      ...(await this.shareFiles("lib/sm83/", "/share/sdcc/lib/sm83/")),
+      ...share,
       "/work/crt0.rel": rtObjs.crt0,
       "/work/gb_runtime.rel": rtObjs.runtime,
     };
     for (const [n, rel] of Object.entries(objects)) files[`/work/${n}`] = rel;
+    // The C library modules the build uses (`*` `/` `%`, 32-bit math, struct copies, calls through function pointers)
+    // link right after the runtime, before any source: sdld would put them after every source, past 16 KB in a big
+    // game, where a `__banked` function (its bank at $4000-$7FFF) cannot reach them, even through fixed code it calls.
+    const library = libraryModules(share["/share/sdcc/lib/sm83/sm83.lib"], [rtObjs.crt0, rtObjs.runtime, ...Object.values(objects)]);
+    for (const m of library) files[`/work/lib/${m.name}`] = m.text;
     const link = await this.run(
       "sdld",
       [
@@ -209,10 +221,11 @@ export class Toolchain {
         ...[...banks].flatMap((b) => ["-b", `_CODE_${b}=0x${((b << 16) | BANK).toString(16)}`]),
         "-k", "/share/sdcc/lib/sm83",
         "/work/out.ihx", "/work/crt0.rel", "/work/gb_runtime.rel",
+        ...library.map((m) => `/work/lib/${m.name}`),
         ...Object.keys(objects).map((n) => `/work/${n}`),
         "-l", "sm83.lib", "-e",
       ],
-      { files, outputs: ["/work/out.ihx",...(contract?["/work/out.map"]:[])] },
+      { files, outputs: ["/work/out.ihx",...(contract || input.objects?["/work/out.map"]:[])] },
     );
     log += `--- sdld ---\n${link.log}`;
     const ihx = link.outputs["/work/out.ihx"];
@@ -236,8 +249,91 @@ export class Toolchain {
       return done({ ok: false, stage: "size", rom: null, romBytesUsed: used, banks: usage.banks, issues, log: log + over.join("\n") + "\n" });
     }
     const rom = fixHeader(ihxToBin(ihx, romSizeFor([...banks])), input.platform === "gbc" ? "gbc" : "gb", input.title, banks.size > 0);
-    return done({ ok: true, stage: "done", rom, romBytesUsed: used, ...(banks.size ? { banks: usage.banks } : {}), issues: parseIssues(log), log });
+    const symbols = input.objects ? mapSymbols(link.outputs["/work/out.map"] ?? "") : undefined;
+    return done({ ok: true, stage: "done", rom, romBytesUsed: used, ...(banks.size ? { banks: usage.banks } : {}), ...(symbols ? { symbols } : {}), issues: parseIssues(log), log });
   }
+}
+
+/** The members of an `ar` archive (sdar writes GNU ar: "name/" or "/n" into the "//" long-name table). */
+export function arMembers(lib: Uint8Array): { name: string; text: string }[] {
+  const text = (a: number, b: number) => Array.from(lib.subarray(a, b), (c) => String.fromCharCode(c)).join("");
+  if (text(0, 8) !== "!<arch>\n") return [];
+  const out: { name: string; text: string }[] = [];
+  let longNames = "";
+  for (let p = 8; p + 60 <= lib.length;) {
+    const raw = text(p, p + 16).trimEnd();
+    const size = parseInt(text(p + 48, p + 58).trim(), 10);
+    if (!Number.isFinite(size) || size < 0 || p + 60 + size > lib.length) return [];
+    const body = text(p + 60, p + 60 + size);
+    if (raw === "//") longNames = body;
+    else if (raw !== "/") {
+      const long = /^\/(\d+)$/.exec(raw);
+      const name = long ? longNames.slice(Number(long[1])).split(/\/?\n/)[0] : raw.replace(/\/$/, "");
+      out.push({ name, text: body });
+    }
+    p += 60 + size + (size & 1);
+  }
+  return out;
+}
+
+type Member = { name: string; text: string; defs: string[]; refs: string[] };
+const indexes = new WeakMap<Uint8Array, { members: Member[]; first: Map<string, Member> }>();
+/** The archive's members with their symbols, and the first member defining each symbol (kept per archive). */
+function libraryIndex(lib: Uint8Array) {
+  let index = indexes.get(lib);
+  if (!index) {
+    const members = arMembers(lib).filter((m) => m.name.endsWith(".rel")).map((m) => ({ ...m, ...relSymbols(m.text) }));
+    const first = new Map<string, Member>();
+    for (const m of members) for (const d of m.defs) if (!first.has(d)) first.set(d, m);
+    index = { members, first };
+    indexes.set(lib, index);
+  }
+  return index;
+}
+
+const relSymbols = (rel: string) => {
+  const defs: string[] = [], refs: string[] = [];
+  for (const m of rel.matchAll(/^S (\S+) (Def|Ref)/gm)) if (m[1] !== ".__.ABS.") (m[2] === "Def" ? defs : refs).push(m[1]);
+  return { defs, refs };
+};
+
+/**
+ * The library members sdld would pull from `lib` for these objects (each symbol from the first member defining it, until
+ * nothing more resolves), in archive order. A member whose code SDCC put in `_HOME` (32-bit and float math), linked
+ * after all of `_CODE`, comes back with that area as its `_CODE`, so it links where it is placed.
+ */
+export function libraryModules(lib: Uint8Array | undefined, objects: string[]): { name: string; text: string }[] {
+  const { members, first } = lib ? libraryIndex(lib) : { members: [], first: new Map<string, Member>() };
+  const defined = new Set<string>();
+  const wanted: string[] = [];
+  for (const o of objects) {
+    const { defs, refs } = relSymbols(o);
+    defs.forEach((d) => defined.add(d));
+    wanted.push(...refs);
+  }
+  const pulled = new Set<Member>();
+  while (wanted.length) {
+    const s = wanted.pop()!;
+    const m = defined.has(s) ? undefined : first.get(s);
+    if (!m || pulled.has(m)) continue;
+    pulled.add(m);
+    m.defs.forEach((d) => defined.add(d));
+    wanted.push(...m.refs);
+  }
+  return members.filter((m) => pulled.has(m)).map((m) => ({ name: m.name, text: homeAsCode(m.text) }));
+}
+
+function homeAsCode(rel: string) {
+  const size = (area: string) => parseInt(new RegExp(`^A ${area} size ([0-9A-Fa-f]+)`, "m").exec(rel)?.[1] ?? "0", 16);
+  if (!size("_HOME") || size("_CODE")) return rel;
+  return rel.replace(/^A (_CODE|_HOME) /gm, (_, a: string) => `A ${a === "_CODE" ? "_HOME" : "_CODE"} `);
+}
+
+/** Global symbols and their addresses from sdld's map (-mjwx: hex, wide). */
+export function mapSymbols(map: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const m of map.matchAll(/^\s+(?:[0-9A-Fa-f]+:)?([0-9A-Fa-f]{8})\s+(\S+)/gm)) out[m[2]] = parseInt(m[1], 16);
+  return out;
 }
 
 const DIAG = /^(?:\/work\/)?([\w.\-/]+):(\d+):\s*(error|warning)\b[^:]*:\s*(.*)$/i;
